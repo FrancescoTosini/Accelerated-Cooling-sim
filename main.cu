@@ -50,7 +50,55 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
 
 int main(int argc, char* argv[])
 {
-    time_t t0, t1, p0, p1;
+    clock_t t0, t1, p0, p1;
+
+    t0 = clock();
+    printf(">> Starting\n");
+
+    // Read input file
+    p0 = clock();
+    InitGrid("Cooling.inp");
+    p1 = clock();
+    fprintf(stdout, ">> InitGrid ended in %lf seconds\n", (double)(p1 - p0)/CLOCKS_PER_SEC);
+
+    // TheorSlope(TSlopeLength,3)
+    p0 = clock();
+    FieldDistribution();
+    p1 = clock();
+    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+
+    // FieldCoord(Xdots,Ydots,2), FieldWeight(Xdots,Ydots)
+    p0 = clock();
+    SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
+    p1 = clock();
+    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+
+    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
+    p0 = clock();
+    FieldInit();
+    p1 = clock();
+    fprintf(stdout, ">> FieldInit ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+
+    // FieldValues(Xdots,Ydots,2)
+    p0 = clock();
+    Cooling(TimeSteps);
+    p1 = clock();
+    fprintf(stdout, ">> Cooling ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+
+    t1 = clock();
+    fprintf(stdout, ">> Computations ended in %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
+
+    // End Program
+
+    free(MeasuredValues);
+    free(FieldWeight);
+    free(FieldCoord);
+    free(TheorSlope);
+    free(FieldValues);
+
+    return 0;
+
+    /*time_t t0, t1, p0, p1;
 
     time(&t0);
     //fprintf(stdout, ">> Starting %s at: %s", argv[0], asctime(localtime(&t0)));
@@ -98,7 +146,7 @@ int main(int argc, char* argv[])
     free(TheorSlope);
     free(FieldValues);
 
-	return 0;
+	return 0;*/
 }
 
 /* FUNCTIONS */
