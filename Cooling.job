@@ -1,0 +1,28 @@
+#!/bin/bash
+#SBATCH --nodes=1             # -N nodes 
+#SBATCH --ntasks-per-node=4   # MPI tasks/node (max 128)
+#SBATCH --cpus-per-task=4     # OpenMP threads/task
+#SBATCH --gres=gpu:1          # 1 gpu per node (max 4)
+#SBATCH --time=1:00:00        # max 24:00:00
+#SBATCH --mem=14GB            # memory/node (max 246GB)
+#SBATCH -A tra22_PoliMI
+#SBATCH -p m100_sys_test
+#SBATCH -q qos_test
+#SBATCH --job-name=myJob             # job_name
+#SBATCH --error=errjobfile-%J.err    # stderr file
+#SBATCH --output=outjobfile-%J.out   # stdout file
+cd $SLURM_SUBMIT_DIR
+echo "Job started at " `date`
+module load gnu
+rm -f Cooling.exe
+gcc -pg -o Cooling.exe -O3 Cooling.c  -lm
+rm -f FieldValues0???.ppm FieldValues0???.jpg
+./Cooling.exe >& Cooling_c.log
+wait
+rm -f Cooling.exe
+gfortran -pg -o Cooling.exe -O3 Cooling.f90  -lm
+rm -f FieldValues0???.ppm FieldValues0???.jpg
+./Cooling.exe >& Cooling_f90.log
+wait
+echo "Job finished at " `date`
+exit
