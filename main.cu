@@ -71,6 +71,8 @@ __device__ int maxRow, maxCol;
     __global__ void gpuFindMax(double* maxima, int* maxIndex, double* a, int* ipiv, int n);
     __global__ void gpuGJStep(double* a, double* b, int n, int* indrow, int* indcol);
 
+    __global__ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, int* indrow, int* indcol, int* ipiv, int n);
+
 
 int main(int argc, char* argv[])
 {
@@ -1219,14 +1221,8 @@ int gpuLinEquSolve(double* a, int n, double* b)
         return(-1);
     }
 
-    for (i = 0; i < n; i++)
-    {
-        gpuFindMax<<<1, 1024 >>>(maxima, maxIndex, a, ipiv, n);
-        cudaDeviceSynchronize();
-
-        gpuGJStep<<<1, 1024 >>>(a, b, n, indrow, indcol);
-        cudaDeviceSynchronize();
-    }
+    gpuLinEquSolveKernel<<<1, 1024 >>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
+    cudaDeviceSynchronize();
 
     /*for (l = n - 1; l >= 0; l--)
     {
@@ -1368,6 +1364,127 @@ void gpuGJStep(double* a, double* b, int n, int* indrow, int* indcol)
                 a[index2D(i, k, n)] = a[index2D(i, k, n)] - a[index2D(maxCol, k, n)] * tmp;
             b[i] = b[i] - b[maxCol] * tmp;
         }
+    }
+}
+
+__global__
+void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, int* indrow, int* indcol, int* ipiv, int n)
+{
+    int iter, i, j, k, icol, redSize;
+    double max, tmp;
+
+    __shared__ double temp;
+
+    for (iter = 0; iter < n; iter++)
+    {
+        for (j = threadIdx.x; j < n; j += blockDim.x)
+        {
+            max = 0;
+
+            if (ipiv[j] != 1)
+            {
+                for (k = 0; k < n; k++)
+                {
+                    if (ipiv[k] == 0 && max <= fabs(a[index2D(j, k, n)]))
+                    {
+                        max = fabs(a[index2D(j, k, n)]);
+                        icol = k;
+                    }
+                }
+            }
+
+            maxima[j] = max;
+            maxIndex[j] = icol;
+        }
+
+        __syncthreads();
+
+        for (j = threadIdx.x; j < n; j += blockDim.x)
+        {
+            if (j % 2 == 0 && (j + 1) < n)
+            {
+                if (maxima[j] < maxima[j + 1])
+                {
+                    maxima[j] = maxima[j + 1];
+                    maxIndex[j] = maxIndex[j + 1];
+                }
+            }
+        }
+
+        __syncthreads();
+
+        if (threadIdx.x == 0)
+        {
+            icol = 0;
+
+            for (j = 2; j < n; j += 2)
+                if (maxima[j] > maxima[icol]) icol = j;
+
+            maxRow = icol;
+            maxCol = maxIndex[icol];
+
+            ipiv[maxCol] = ipiv[maxCol] + 1;
+        }
+
+        __syncthreads();
+
+        if (maxRow != maxCol)
+        {
+            for (i = threadIdx.x; i < n; i += blockDim.x)
+            {
+                tmp = a[index2D(maxRow, i, n)];
+                a[index2D(maxRow, i, n)] = a[index2D(maxCol, i, n)];
+                a[index2D(maxCol, i, n)] = tmp;
+            }
+
+            if (threadIdx.x == 0)
+            {
+                tmp = b[maxRow];
+                b[maxRow] = b[maxCol];
+                b[maxCol] = tmp;
+            }
+        }
+
+        if (threadIdx.x == 0)
+        {
+            indrow[i] = maxRow;
+            indcol[i] = maxCol;
+        }
+
+        __syncthreads();
+
+        // TODO: Missing check on singularity
+
+        if (threadIdx.x == 0)
+        {
+            temp = (double)1.0 / a[index2D(maxCol, maxCol, n)];
+
+            //TODO: check if it is an error
+            //a[index2D(maxCol, maxCol, n)] = 1.0; 
+
+            b[maxCol] = b[maxCol] * temp;
+        }
+
+        __syncthreads();
+
+        for (i = threadIdx.x; i < n; i += blockDim.x)
+            a[index2D(maxCol, i, n)] = a[index2D(maxCol, i, n)] * temp;
+
+        __syncthreads();
+
+        for (i = threadIdx.x; i < n; i += blockDim.x)
+        {
+            if (i != maxCol)
+            {
+                tmp = a[index2D(i, maxCol, n)];
+                a[index2D(i, maxCol, n)] = 0.0;
+                for (k = 0; k < n; k++)
+                    a[index2D(i, k, n)] = a[index2D(i, k, n)] - a[index2D(maxCol, k, n)] * tmp;
+                b[i] = b[i] - b[maxCol] * tmp;
+            }
+        }
+
+        __syncthreads();
     }
 }
 
