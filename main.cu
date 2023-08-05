@@ -631,8 +631,10 @@ void gpuFieldDistribution()
     gpuEqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
     cudaDeviceSynchronize();
 
-    rc = gpuLinEquSolve(CoeffMatrix, LA, B);
-    if (rc != 0) exit(-1);
+    gpuLinEquSolve(CoeffMatrix, LA, B);
+    cudaDeviceSynchronize();
+
+    //if (rc != 0) exit(-1);
 
     /*
     for (i = 0; i < LA; i++) TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
@@ -1171,9 +1173,7 @@ int LinEquSolve(double* a, int n, double* b)
 int gpuLinEquSolve(double* a, int n, double* b)
 {
     /* Gauss-Jordan elimination algorithm */
-    int i, j, k, l, icol, irow;
     int *indcol, *indrow, *ipiv;
-    double bigger, temp;
 
     cudaError_t err;
 
@@ -1221,21 +1221,8 @@ int gpuLinEquSolve(double* a, int n, double* b)
         return(-1);
     }
 
-    gpuLinEquSolveKernel<<<1, 1024 >>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
+    gpuLinEquSolveKernel<<<1, 1024>>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
     cudaDeviceSynchronize();
-
-    /*for (l = n - 1; l >= 0; l--)
-    {
-        if (indrow[l] != indcol[l])
-        {
-            for (k = 0; k < n; k++)
-            {
-                temp = a[index2D(k, indrow[l], n)];
-                a[index2D(k, indrow[l], n)] = a[index2D(k, indcol[l], n)];
-                a[index2D(k, indcol[l], n)] = temp;
-            }
-        }
-    }*/
 
     cudaFree(indcol);
     cudaFree(indrow);
@@ -1485,6 +1472,21 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
         }
 
         __syncthreads();
+    }
+
+    // Last step
+
+    for (j = threadIdx.x; j < n; j += blockDim.x)
+    {
+        if (indrow[j] != indcol[j])
+        {
+            for (k = 0; k < n; k++)
+            {
+                tmp = a[index2D(k, indrow[j], n)];
+                a[index2D(k, indrow[j], n)] = a[index2D(k, indcol[j], n)];
+                a[index2D(k, indcol[j], n)] = tmp;
+            }
+        }
     }
 }
 
