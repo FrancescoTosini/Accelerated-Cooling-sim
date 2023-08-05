@@ -20,7 +20,7 @@
 
 #define Xdots 1000   // Plate grid resolution in 2 dimensions
 #define Ydots 1000   // May be changed to 1000x1000
-#define ACCEL 1
+#define ACCEL 1      // Should GPU be used?
 
 #define PATH_INPUT "./"
 
@@ -43,7 +43,7 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
 
     void InitGrid(char* InputFile);
     int LinEquSolve(double* h_A, int n, double* h_b);
-    int LinEquSolve_CUDA(double* h_A, int n, double* h_b);
+    int LinEquSolve_ACC(double* h_A, int n, double* h_b);
     void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts);
     double Solution(double x, double y);
     void FieldDistribution();
@@ -289,8 +289,7 @@ void FieldDistribution()
     */
     double *CoeffMatrix, *B;
     double x0, y0, x1, y1;
-    clock_t t0, t1;
-    t0 = clock();
+    double t0, t1;
 
     int M, Mm1, N, Nm1, LA;
     int i, rc;
@@ -312,68 +311,29 @@ void FieldDistribution()
     LA = Mm1 * Nm1; // unknown points
     TSlopeLength = LA;
 
-    /* Allocate CoeffMatrix */
     CoeffMatrix = (double*)malloc(sizeof(double) * LA * LA);
-    if (CoeffMatrix == NULL) 
-    {
-        fprintf(stderr, "(Error) >> Cannot allocate CoeffMatrix[%d,%d]\n", LA, LA);
-        exit(-1);
-    }
-
-    /* Allocate TheorSlope */
     TheorSlope = (double*)malloc(sizeof(double) * TSlopeLength * 3);
-    if (TheorSlope == NULL) 
-    {
-        fprintf(stderr, "(Error) >> Cannot allocate TheorSlope[%d,3]\n", TSlopeLength);
-        exit(-1);
-    }
-
-    /* Allocate B */
     B = (double*)malloc(sizeof(double) * LA);
-    if (B == NULL) 
+
+    if (CoeffMatrix == NULL || TheorSlope == NULL || B == NULL) 
     {
-        fprintf(stderr, "(Error) >> Cannot allocate B[%d]\n", LA);
+        fprintf(stderr, "(Error) >> Cannot allocate memory. \nCoeffMatrix: %p; TheorSlope: %p, B: %p\n", CoeffMatrix, TheorSlope, B);
         exit(-1);
     }
 
-    t1 = clock();
-    fprintf(stdout, "\t>> Allocating took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
-
-    t0 = clock();
     GridDef(x0, x1, y0, y1, N, TheorSlope);
-    t1 = clock();
-    fprintf(stdout, "\t>> GridDef took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
-
-    t0 = clock();
     EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
-    t1 = clock();
-    fprintf(stdout, "\t>> EqsDef took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
-    
-    // if(ACCEL){
-    // } else {
-    // }
-    double *result_seq = B;
-    double *result_acc = NULL;
-    result_acc = (double*)malloc(sizeof(double)*LA);
-    memcpy(result_acc, B, sizeof(double)*LA);
-    
-    t0 = clock();
-    rc = LinEquSolve_CUDA(CoeffMatrix, LA, result_acc);
-    t1 = clock();
-    fprintf(stdout, "\t>> LinEquSolve_CUDA took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
-    t0 = clock();
-    rc = LinEquSolve(CoeffMatrix,LA,result_seq);
-    t1 = clock();
-    fprintf(stdout, "\t>> LinEquSolve_seq took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
+    GridDef(x0, x1, y0, y1, N, TheorSlope);
 
-    for(i=0;i<LA;i++){
-        result_seq[i] -=result_acc[i];
+    t0 = second();
+    if (ACCEL){
+        rc = LinEquSolve_ACC(CoeffMatrix, LA, B);
+    } else {
+        rc = LinEquSolve(CoeffMatrix,LA,B);
     }
-    double ninf = -1;
-    for(i=0;i<LA;i++)
-        ninf = max(ninf, abs(result_seq[i]));
+    t1 = second();
+    fprintf(stdout, "\t>> LinEquSolve took %lf seconds\n", (t1-t0));
 
-    printf("---------maximum difference between solutions is %f. Good enough?\n", ninf);
     if (rc != 0) exit(-1);
 
     for (i = 0; i < LA; i++) TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
@@ -664,130 +624,48 @@ double Solution(double x, double y)
 }
 
 /**
- * result in h_b
+ * result in h_b. h_A contains L matrix of LU factorization
 */
-
-int LinEquSolve_CUDA(double* h_A, // dense coefficient matrix
+int LinEquSolve_ACC(double* h_A, // dense coefficient matrix
     int n, // size (square) 
     double* h_b) // A*x = b
 {
     cusolverDnHandle_t handle = NULL;
-    cublasHandle_t cublasHandle = NULL; // used in residual evaluation
     cudaStream_t stream = NULL;
     int rowsA = n; // number of rows of A
     int colsA = n; // number of columns of A
     int lda   = n; // leading dimension in dense matrix
-    double *h_x = NULL; // host version of x
     double *h_r = NULL; // r = b - A*x, copy of d_r
 
     double *d_A = NULL; // gpu copy of h_A
-    double *d_x = NULL; // x = A \ h_b
+    // double *d_x = NULL; // x = A \ h_b, saved in d_b
     double *d_b = NULL; // gpu copy of h_b
     double *d_r = NULL; // r = b - A*x
 
-    // the constants are used in residual evaluation, r = h_b - A*x
-    const double minus_one = -1.0;
-    const double one = 1.0;
-
-    double x_inf = 0.0;
-    double r_inf = 0.0;
-    double A_inf = 0.0;
-    int errors = 0;
-
-    h_x = (double*)malloc(sizeof(double)*colsA);
-    h_r = (double*)malloc(sizeof(double)*rowsA);
-
-    // printMatrix(n,n,h_A,n,"pre rescaling");
-
-    // // rescale CoeffMatrix to have B as only ones
-    // for(int row = 0 ; row < n ; row++)
-    // {
-    //     for(int col = 0; col < n; col++){
-    //         h_A[index2D(row,col,n)] /= h_b[row];
-    //     }
-    //     h_b[row] = 1.0;
-    // }
-
-    // printMatrix(n,n,h_A,n,"post rescaling");
-    // printMatrix(n,n,h_b,n,"post rescaling");
-
     // cuSolver setup
     checkCudaErrors(cusolverDnCreate(&handle));
-    checkCudaErrors(cublasCreate(&cublasHandle));
     checkCudaErrors(cudaStreamCreate(&stream));
 
-    checkCudaErrors(cusolverDnSetStream(handle, stream));
-    checkCudaErrors(cublasSetStream(cublasHandle, stream));
+    // cublasHandle_t cublasHandle = NULL; // used in residual evaluation
+    // checkCudaErrors(cusolverDnSetStream(handle, stream));
+    // checkCudaErrors(cublasSetStream(cublasHandle, stream));
 
     // allocate on device
     checkCudaErrors(cudaMalloc((void **)&d_A, sizeof(double)*lda*colsA));
-    checkCudaErrors(cudaMalloc((void **)&d_x, sizeof(double)*colsA));
     checkCudaErrors(cudaMalloc((void **)&d_b, sizeof(double)*rowsA));
     checkCudaErrors(cudaMalloc((void **)&d_r, sizeof(double)*rowsA));
-
-    printf("step 4: prepare data on device\n");
+    
+    // copy to device
     checkCudaErrors(cudaMemcpy(d_A, h_A, sizeof(double)*lda*colsA, cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(d_b, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
 
-    printf("step 5: solve A*x = h_b \n");
-    linearSolverLU(handle, rowsA, d_A, lda, d_b, d_x);
+    // actually solve
+    linearSolverLU(handle, rowsA, d_A, lda, d_b);
 
-    // result is to be left in b
-    checkCudaErrors(cudaMemcpy(h_b, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
+    // copy result to b
+    checkCudaErrors(cudaMemcpy(h_b, d_b, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // printf("step 6: evaluate residual\n");
-    // checkCudaErrors(cudaMemcpy(d_r, d_b, sizeof(double)*rowsA, cudaMemcpyDeviceToDevice));
-    // // r = h_b - A*x
-    // checkCudaErrors(cublasDgemm_v2(
-    //     cublasHandle,
-    //     CUBLAS_OP_N,
-    //     CUBLAS_OP_N,
-    //     rowsA,
-    //     1,
-    //     colsA,
-    //     &minus_one,
-    //     d_A,
-    //     lda,
-    //     d_x,
-    //     rowsA,
-    //     &one,
-    //     d_r,
-    //     rowsA));
-
-    // checkCudaErrors(cudaMemcpy(h_x, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
-    // checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
-
-
-    // checkCudaErrors(cudaMemcpy(h_x, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
-    // checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
-    // // output expects solution in h_b
-    // memcpy(h_b, h_x, sizeof(double)*colsA);
-
-    // x_inf = vec_norminf(colsA, h_x);
-    // r_inf = vec_norminf(rowsA, h_r);
-    // A_inf = mat_norminf(rowsA, colsA, h_A, lda);
-
-    // printf("|h_b - A*x| = %E \n", r_inf);
-    // printf("|A| = %E \n", A_inf);
-    // printf("|x| = %E \n", x_inf);
-    // printf("|h_b - A*x|/(|A|*|x|) = %E \n", r_inf/(A_inf * x_inf));
-
-    // if (handle) { checkCudaErrors(cusolverDnDestroy(handle)); }
-    // // if (cublasHandle) { checkCudaErrors(cublasDestroy(cublasHandle)); }
-    // if (stream) { checkCudaErrors(cudaStreamDestroy(stream)); }
-
-    // // if (h_A) { free(h_A); }
-    // // if (h_x) { free(h_x); }
-    // // if (h_b) { free(h_b); }
-    // if (h_r) { free(h_r); }
-
-    // // if (d_A) { checkCudaErrors(cudaFree(d_A)); }
-    // // if (d_x) { checkCudaErrors(cudaFree(d_x)); }
-    // // if (d_b) { checkCudaErrors(cudaFree(d_b)); }
-    // // if (d_r) { checkCudaErrors(cudaFree(d_r)); }
-
-    // // cudaDeviceReset();
     return 0;
 }
 
@@ -1164,4 +1042,32 @@ void Update(int xdots, int ydots, double* u1, double* u2)
     }
 
     return;
+}
+
+/* CHECK CORRECT RESULTS */
+int checkACCLinEquSolve(double* h_A,
+                        double* h_b,
+                        int n // size
+){
+    double *result_seq = h_b;
+    double *result_acc = NULL;
+    int rc;
+    result_acc = (double*)malloc(sizeof(double)*n);
+    memcpy(result_acc, h_b, sizeof(double)*n);
+    
+    rc = LinEquSolve_ACC(h_A, n, result_acc);
+    if(rc != 0) exit(EXIT_FAILURE);
+    fprintf(stdout, "\t>> LinEquSolve_CUDA completed");
+    rc = LinEquSolve(h_A,n,result_seq);
+    if(rc != 0) exit(EXIT_FAILURE);
+    fprintf(stdout, "\t>> LinEquSolve completed");
+
+    for(int i=0;i<n;i++){
+        result_seq[i] -=result_acc[i];
+    }
+    double ninf = -1;
+    for(int i=0;i<n;i++)
+        ninf = max(ninf, abs(result_seq[i]));
+
+    printf("---------maximum difference between solutions is %f. Good enough?\n", ninf);
 }
