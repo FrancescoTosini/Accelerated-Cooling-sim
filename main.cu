@@ -1,20 +1,28 @@
 ﻿
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "cusolverDn.h"
+#include "helper_cuda.h"
+#include "helper_cusolver.h"
+#include "factor.h" 
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <cublas_v2.h>
 
 #include "util.cu"
 
 #define index2D(i,j,LD1) i + ((j)*LD1)    // element position in 2-D arrays
 #define index3D(i,j,k,LD1,LD2) i + ((j)*LD1) + ((k)*LD1*LD2)   // element position in 3-D arrays
 
-#define Xdots 1400   // Plate grid resolution in 2 dimensions
-#define Ydots 1400   // May be changed to 1000x1000
+#define Xdots 1000   // Plate grid resolution in 2 dimensions
+#define Ydots 1000   // May be changed to 1000x1000
+#define ACCEL 1
+
+#define PATH_INPUT "./"
 
 // Parameters to compute point sensitiveness - values read from input file
 double Sreal, Simag, Rreal, Rimag;
@@ -34,7 +42,8 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
 //  functions  prototypes
 
     void InitGrid(char* InputFile);
-    int LinEquSolve(double* a, int n, double* b);
+    int LinEquSolve(double* h_A, int n, double* h_b);
+    int LinEquSolve_CUDA(double* h_A, int n, double* h_b);
     void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts);
     double Solution(double x, double y);
     void FieldDistribution();
@@ -47,6 +56,15 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
     void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name);
     void Statistics(int s1, int s2, double* rdata, int s);
     void Update(int xdots, int ydots, double* u1, double* u2);
+    void printMatrix(int m, int n, const double*A, int lda, const char* name)
+{
+    for(int row = 0 ; row < m ; row++){
+        for(int col = 0 ; col < n ; col++){
+            double Areg = A[row + col*lda];
+            printf("%s(%d,%d) = %f\n", name, row+1, col+1, Areg);
+        }
+    } 
+}
 
 int main(int argc, char* argv[])
 {
@@ -54,10 +72,18 @@ int main(int argc, char* argv[])
 
     t0 = clock();
     printf(">> Starting\n");
+    int devices = 0; 
+
+    cudaError_t err = cudaGetDeviceCount(&devices); 
+
+    if (devices > 0 && err == cudaSuccess) 
+    { 
+        printf("running on GPU\n");
+    }
 
     // Read input file
     p0 = clock();
-    InitGrid("Cooling.inp");
+    InitGrid(PATH_INPUT "Cooling.inp");
     p1 = clock();
     fprintf(stdout, ">> InitGrid ended in %lf seconds\n", (double)(p1 - p0)/CLOCKS_PER_SEC);
 
@@ -97,56 +123,6 @@ int main(int argc, char* argv[])
     free(FieldValues);
 
     return 0;
-
-    /*time_t t0, t1, p0, p1;
-
-    time(&t0);
-    //fprintf(stdout, ">> Starting %s at: %s", argv[0], asctime(localtime(&t0)));
-    printf(">> Starting\n");
-
-    // Read input file
-    time(&p0);
-    InitGrid("Cooling.inp");
-    time(&p1);
-    fprintf(stdout, ">> InitGrid ended in %lf seconds\n", difftime(p1, p0));
-
-    // TheorSlope(TSlopeLength,3)
-    time(&p0);
-    FieldDistribution();
-    time(&p1);
-    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n", difftime(p1, p0));
-
-    // FieldCoord(Xdots,Ydots,2), FieldWeight(Xdots,Ydots)
-    time(&p0);
-    SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
-    time(&p1);
-    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", difftime(p1, p0));
-
-    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
-    time(&p0);
-    FieldInit();
-    time(&p1);
-    fprintf(stdout, ">> FieldInit ended in %lf seconds\n", difftime(p1, p0));
-
-    // FieldValues(Xdots,Ydots,2)
-    time(&p0);
-    Cooling(TimeSteps);
-    time(&p1);
-    fprintf(stdout, ">> Cooling ended in %lf seconds\n", difftime(p1, p0));
-
-    time(&t1);
-    fprintf(stdout, ">> Ending at: %s", asctime(localtime(&t1)));
-    fprintf(stdout, ">> Computations ended in %lf seconds\n", difftime(t1, t0));
-
-    // End Program
-
-    free(MeasuredValues);
-    free(FieldWeight);
-    free(FieldCoord);
-    free(TheorSlope);
-    free(FieldValues);
-
-	return 0;*/
 }
 
 /* FUNCTIONS */
@@ -313,6 +289,8 @@ void FieldDistribution()
     */
     double *CoeffMatrix, *B;
     double x0, y0, x1, y1;
+    clock_t t0, t1;
+    t0 = clock();
 
     int M, Mm1, N, Nm1, LA;
     int i, rc;
@@ -358,11 +336,44 @@ void FieldDistribution()
         exit(-1);
     }
 
+    t1 = clock();
+    fprintf(stdout, "\t>> Allocating took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
+
+    t0 = clock();
     GridDef(x0, x1, y0, y1, N, TheorSlope);
+    t1 = clock();
+    fprintf(stdout, "\t>> GridDef took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
 
+    t0 = clock();
     EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
+    t1 = clock();
+    fprintf(stdout, "\t>> EqsDef took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
+    
+    // if(ACCEL){
+    // } else {
+    // }
+    double *result_seq = B;
+    double *result_acc = NULL;
+    result_acc = (double*)malloc(sizeof(double)*LA);
+    memcpy(result_acc, B, sizeof(double)*LA);
+    
+    t0 = clock();
+    rc = LinEquSolve_CUDA(CoeffMatrix, LA, result_acc);
+    t1 = clock();
+    fprintf(stdout, "\t>> LinEquSolve_CUDA took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
+    t0 = clock();
+    rc = LinEquSolve(CoeffMatrix,LA,result_seq);
+    t1 = clock();
+    fprintf(stdout, "\t>> LinEquSolve_seq took %lf seconds\n", (double)(t1 - t0)/CLOCKS_PER_SEC);
 
-    rc = LinEquSolve(CoeffMatrix, LA, B);
+    for(i=0;i<LA;i++){
+        result_seq[i] -=result_acc[i];
+    }
+    double ninf = -1;
+    for(i=0;i<LA;i++)
+        ninf = max(ninf, abs(result_seq[i]));
+
+    printf("---------maximum difference between solutions is %f. Good enough?\n", ninf);
     if (rc != 0) exit(-1);
 
     for (i = 0; i < LA; i++) TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
@@ -652,6 +663,134 @@ double Solution(double x, double y)
     return ((x * x * x) + (y * y * y)) / (double)6.0;
 }
 
+/**
+ * result in h_b
+*/
+
+int LinEquSolve_CUDA(double* h_A, // dense coefficient matrix
+    int n, // size (square) 
+    double* h_b) // A*x = b
+{
+    cusolverDnHandle_t handle = NULL;
+    cublasHandle_t cublasHandle = NULL; // used in residual evaluation
+    cudaStream_t stream = NULL;
+    int rowsA = n; // number of rows of A
+    int colsA = n; // number of columns of A
+    int lda   = n; // leading dimension in dense matrix
+    double *h_x = NULL; // host version of x
+    double *h_r = NULL; // r = b - A*x, copy of d_r
+
+    double *d_A = NULL; // gpu copy of h_A
+    double *d_x = NULL; // x = A \ h_b
+    double *d_b = NULL; // gpu copy of h_b
+    double *d_r = NULL; // r = b - A*x
+
+    // the constants are used in residual evaluation, r = h_b - A*x
+    const double minus_one = -1.0;
+    const double one = 1.0;
+
+    double x_inf = 0.0;
+    double r_inf = 0.0;
+    double A_inf = 0.0;
+    int errors = 0;
+
+    h_x = (double*)malloc(sizeof(double)*colsA);
+    h_r = (double*)malloc(sizeof(double)*rowsA);
+
+    // printMatrix(n,n,h_A,n,"pre rescaling");
+
+    // // rescale CoeffMatrix to have B as only ones
+    // for(int row = 0 ; row < n ; row++)
+    // {
+    //     for(int col = 0; col < n; col++){
+    //         h_A[index2D(row,col,n)] /= h_b[row];
+    //     }
+    //     h_b[row] = 1.0;
+    // }
+
+    // printMatrix(n,n,h_A,n,"post rescaling");
+    // printMatrix(n,n,h_b,n,"post rescaling");
+
+    // cuSolver setup
+    checkCudaErrors(cusolverDnCreate(&handle));
+    checkCudaErrors(cublasCreate(&cublasHandle));
+    checkCudaErrors(cudaStreamCreate(&stream));
+
+    checkCudaErrors(cusolverDnSetStream(handle, stream));
+    checkCudaErrors(cublasSetStream(cublasHandle, stream));
+
+    // allocate on device
+    checkCudaErrors(cudaMalloc((void **)&d_A, sizeof(double)*lda*colsA));
+    checkCudaErrors(cudaMalloc((void **)&d_x, sizeof(double)*colsA));
+    checkCudaErrors(cudaMalloc((void **)&d_b, sizeof(double)*rowsA));
+    checkCudaErrors(cudaMalloc((void **)&d_r, sizeof(double)*rowsA));
+
+    printf("step 4: prepare data on device\n");
+    checkCudaErrors(cudaMemcpy(d_A, h_A, sizeof(double)*lda*colsA, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_b, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
+
+    printf("step 5: solve A*x = h_b \n");
+    linearSolverLU(handle, rowsA, d_A, lda, d_b, d_x);
+
+    // result is to be left in b
+    checkCudaErrors(cudaMemcpy(h_b, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    // printf("step 6: evaluate residual\n");
+    // checkCudaErrors(cudaMemcpy(d_r, d_b, sizeof(double)*rowsA, cudaMemcpyDeviceToDevice));
+    // // r = h_b - A*x
+    // checkCudaErrors(cublasDgemm_v2(
+    //     cublasHandle,
+    //     CUBLAS_OP_N,
+    //     CUBLAS_OP_N,
+    //     rowsA,
+    //     1,
+    //     colsA,
+    //     &minus_one,
+    //     d_A,
+    //     lda,
+    //     d_x,
+    //     rowsA,
+    //     &one,
+    //     d_r,
+    //     rowsA));
+
+    // checkCudaErrors(cudaMemcpy(h_x, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
+    // checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
+
+
+    // checkCudaErrors(cudaMemcpy(h_x, d_x, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
+    // checkCudaErrors(cudaMemcpy(h_r, d_r, sizeof(double)*rowsA, cudaMemcpyDeviceToHost));
+    // // output expects solution in h_b
+    // memcpy(h_b, h_x, sizeof(double)*colsA);
+
+    // x_inf = vec_norminf(colsA, h_x);
+    // r_inf = vec_norminf(rowsA, h_r);
+    // A_inf = mat_norminf(rowsA, colsA, h_A, lda);
+
+    // printf("|h_b - A*x| = %E \n", r_inf);
+    // printf("|A| = %E \n", A_inf);
+    // printf("|x| = %E \n", x_inf);
+    // printf("|h_b - A*x|/(|A|*|x|) = %E \n", r_inf/(A_inf * x_inf));
+
+    // if (handle) { checkCudaErrors(cusolverDnDestroy(handle)); }
+    // // if (cublasHandle) { checkCudaErrors(cublasDestroy(cublasHandle)); }
+    // if (stream) { checkCudaErrors(cudaStreamDestroy(stream)); }
+
+    // // if (h_A) { free(h_A); }
+    // // if (h_x) { free(h_x); }
+    // // if (h_b) { free(h_b); }
+    // if (h_r) { free(h_r); }
+
+    // // if (d_A) { checkCudaErrors(cudaFree(d_A)); }
+    // // if (d_x) { checkCudaErrors(cudaFree(d_x)); }
+    // // if (d_b) { checkCudaErrors(cudaFree(d_b)); }
+    // // if (d_r) { checkCudaErrors(cudaFree(d_r)); }
+
+    // // cudaDeviceReset();
+    return 0;
+}
+
 int LinEquSolve(double* a, int n, double* b)
 {
     /* Gauss-Jordan elimination algorithm */
@@ -851,7 +990,7 @@ void FieldPoints(double Diff)
 
 void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name)
 {
-    /* Simple subroutine to dump integer data in a PPM format */
+    /* Simple subroutine to dump integer data in h_A PPM format */
 
     int cm[3][256];  /* R,G,B, Colour Map */
     FILE* ouni, * ColMap;
@@ -870,7 +1009,7 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     {
         if (fscanf(ColMap, " %3d %3d %3d", &cm[0][i], &cm[1][i], &cm[2][i]) < 3) 
         {
-            fprintf(stderr, "(Error@RealData2ppm) >> reading colour map at line %d: r, g, b =", (i + 1));
+            fprintf(stderr, "(Error@RealData2ppm) >> reading colour map at line %d: r, g, h_b =", (i + 1));
             fprintf(stderr, " %3.3d %3.3d %3.3d\n", cm[0][i], cm[1][i], cm[2][i]);
             exit(1);
         }

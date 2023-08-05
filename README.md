@@ -2,6 +2,11 @@
 
 CUDA-accelerated algorithm for simulating the spread of heat across a surface. Developed within the scope of the "PARALLEL COMPUTING ON TRADITIONAL CORE-BASED AND EMERGING GPU-BASED ARCHITECTURES THROUGH OPENMP AND OPENACC / CUDA" course at Politecnico di Milano
 
+## profiling
+
+`nsys profile -t cuda --stats=true --force-overwrite true -o report ${BIN}`
+`nsys-ui ${report}`
+
 ## Original instructions
 
 In the 07-Cooling directory there is a sequential source code to be optimized and scripts for compiling and running on M100 (with few changes on any other Linux platforms). Tests have been realized with GNU compilers, but other C and Fortran compilers should do as well.
