@@ -1,83 +1,84 @@
 ﻿
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
-#include "cusolverDn.h"
-#include "helper_cuda.h"
-#include "helper_cusolver.h"
-#include "factor.h" 
-
+#include <cublas_v2.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <time.h>
-#include <cublas_v2.h>
 
+#include "cuda_runtime.h"
+#include "cusolverDn.h"
+#include "device_launch_parameters.h"
+#include "factor.h"
+#include "helper_cuda.h"
+#include "helper_cusolver.h"
 #include "util.cu"
 
-#define index2D(i,j,LD1) i + ((j)*LD1)    // element position in 2-D arrays
-#define index3D(i,j,k,LD1,LD2) i + ((j)*LD1) + ((k)*LD1*LD2)   // element position in 3-D arrays
+#define index2D(i, j, LD1) i + ((j)*LD1) // element position in 2-D arrays
+#define index3D(i, j, k, LD1, LD2) \
+    i + ((j)*LD1) + ((k)*LD1 * LD2) // element position in 3-D arrays
 
-#define Xdots 1000   // Plate grid resolution in 2 dimensions
-#define Ydots 1000   // May be changed to 1000x1000
-#define ACCEL 1      // Should GPU be used?
+#define Xdots 1000 // Plate grid resolution in 2 dimensions
+#define Ydots 1000 // May be changed to 1000x1000
+#define ACCEL 1    // Should GPU be used?
 
 #define PATH_INPUT "./"
 
 // Parameters to compute point sensitiveness - values read from input file
 double Sreal, Simag, Rreal, Rimag;
 int MaxIters;
-int TimeSteps;   // Evolution time steps
+int TimeSteps; // Evolution time steps
 
-double* MeasuredValues;    // 2-D array - (NumInputValues,3) - Values read in input file
-int NumInputValues;        // Number of values read in input file
-double* TheorSlope;        // 2-D array - Theoretical value distribution
-int TSlopeLength;          // TheorSlope grid dimensions
-int* FieldWeight;          // 2-D array - (Xdots,Ydots) - Degree of sensitiveness to perturbing field 
-double* FieldCoord;        // 3-D array - X, Y coordinates in field
-double* FieldValues;       // 3-D array - X, Y coordinates in field
+double *MeasuredValues; // 2-D array - (NumInputValues,3) - Values read in
+                        // input file
+int NumInputValues;     // Number of values read in input file
+double *TheorSlope;     // 2-D array - Theoretical value distribution
+int TSlopeLength;       // TheorSlope grid dimensions
+int *FieldWeight;       // 2-D array - (Xdots,Ydots) - Degree of sensitiveness to
+                        // perturbing field
+double *FieldCoord;     // 3-D array - X, Y coordinates in field
+double *FieldValues;    // 3-D array - X, Y coordinates in field
 
 /* CODE */
 
 //  functions  prototypes
 
-    void InitGrid(char* InputFile);
-    int LinEquSolve(double* h_A, int n, double* h_b);
-    int LinEquSolve_ACC(double* h_A, int n, double* h_b);
-    void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts);
-    double Solution(double x, double y);
-    void FieldDistribution();
-    void GridDef(double x0, double x1, double y0, double y1, int N, double* Pts);
-    void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
-    void FieldInit();
-    double NearestValue(double xc, double yc, int ld, double* Values);
-    void FieldPoints(double Diff);
-    void Cooling(int steps);
-    void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name);
-    void Statistics(int s1, int s2, double* rdata, int s);
-    void Update(int xdots, int ydots, double* u1, double* u2);
-    void printMatrix(int m, int n, const double*A, int lda, const char* name)
-{
-    for(int row = 0 ; row < m ; row++){
-        for(int col = 0 ; col < n ; col++){
-            double Areg = A[row + col*lda];
-            printf("%s(%d,%d) = %f\n", name, row+1, col+1, Areg);
+void InitGrid(char *InputFile);
+int LinEquSolve(double *h_A, int n, double *h_b);
+int LinEquSolve_ACC(double *h_A, int n, double *h_b);
+void EqsDef(double x0, double x1, double y0, double y1, int N, int LA,
+            double *A, double *Rhs, double *Pts);
+double Solution(double x, double y);
+void FieldDistribution();
+void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts);
+void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
+void FieldInit();
+double NearestValue(double xc, double yc, int ld, double *Values);
+void FieldPoints(double Diff);
+void Cooling(int steps);
+void RealData2ppm(int s1, int s2, double *rdata, double *vmin, double *vmax,
+                  char *name);
+void Statistics(int s1, int s2, double *rdata, int s);
+void Update(int xdots, int ydots, double *u1, double *u2);
+void printMatrix(int m, int n, const double *A, int lda, const char *name) {
+    for (int row = 0; row < m; row++) {
+        for (int col = 0; col < n; col++) {
+            double Areg = A[row + col * lda];
+            printf("%s(%d,%d) = %f\n", name, row + 1, col + 1, Areg);
         }
-    } 
+    }
 }
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char *argv[]) {
     clock_t t0, t1, p0, p1;
 
     t0 = clock();
     printf(">> Starting\n");
-    int devices = 0; 
+    int devices = 0;
 
-    cudaError_t err = cudaGetDeviceCount(&devices); 
+    cudaError_t err = cudaGetDeviceCount(&devices);
 
-    if (devices > 0 && err == cudaSuccess) 
-    { 
+    if (devices > 0 && err == cudaSuccess) {
         printf("running on GPU\n");
     }
 
@@ -85,34 +86,41 @@ int main(int argc, char* argv[])
     p0 = clock();
     InitGrid(PATH_INPUT "Cooling.inp");
     p1 = clock();
-    fprintf(stdout, ">> InitGrid ended in %lf seconds\n", (double)(p1 - p0)/CLOCKS_PER_SEC);
+    fprintf(stdout, ">> InitGrid ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // TheorSlope(TSlopeLength,3)
     p0 = clock();
     FieldDistribution();
     p1 = clock();
-    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // FieldCoord(Xdots,Ydots,2), FieldWeight(Xdots,Ydots)
     p0 = clock();
     SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
     p1 = clock();
-    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
-    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
+    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) ->
+    // FieldValues(Xdots,Ydots,2)
     p0 = clock();
     FieldInit();
     p1 = clock();
-    fprintf(stdout, ">> FieldInit ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> FieldInit ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // FieldValues(Xdots,Ydots,2)
     p0 = clock();
     Cooling(TimeSteps);
     p1 = clock();
-    fprintf(stdout, ">> Cooling ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> Cooling ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     t1 = clock();
-    fprintf(stdout, ">> Computations ended in %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> Computations ended in %lf seconds\n",
+            (double)(t1 - t0) / CLOCKS_PER_SEC);
 
     // End Program
 
@@ -127,8 +135,7 @@ int main(int argc, char* argv[])
 
 /* FUNCTIONS */
 
-void InitGrid(char* InputFile)
-{
+void InitGrid(char *InputFile) {
     /* Output:
     !  MeasuredValues(:,3) - values read from input file
     !  Initialization of FieldWeight(Xdots,Ydots) and FieldCoord(Xdots,Ydots,2)
@@ -136,13 +143,12 @@ void InitGrid(char* InputFile)
 
     int valrows, st;
     char filerow[80];
-    FILE* inpunit;
+    FILE *inpunit;
 
     fprintf(stdout, ">> Initializing grid ...\n");
 
     inpunit = fopen(InputFile, "r");
-    if (!inpunit) 
-    {
+    if (!inpunit) {
         fprintf(stderr, "(Error) >>> Cannot access file %s\n", InputFile);
         exit(-1);
     }
@@ -150,91 +156,91 @@ void InitGrid(char* InputFile)
     // Read measured values
     NumInputValues = 0;
     valrows = 0;
-    while (1)
-    {
+    while (1) {
         st = readrow(filerow, 80, inpunit);
-        if (filerow[0] == '#') continue;
-        if (NumInputValues <= 0) 
-        {
-            if (sscanf(filerow, "  %d", &NumInputValues) < 1) 
-            {
-                if (NumInputValues <= 0) 
-                {
-                    fprintf(stderr, "(Error) >> there seems to be %d input values...\n", NumInputValues);
+        if (filerow[0] == '#')
+            continue;
+        if (NumInputValues <= 0) {
+            if (sscanf(filerow, "  %d", &NumInputValues) < 1) {
+                if (NumInputValues <= 0) {
+                    fprintf(stderr,
+                            "(Error) >> there seems to be %d input values...\n",
+                            NumInputValues);
+                    exit(-1);
+                }
+            } else {
+                MeasuredValues = (double *)malloc(sizeof(double) * NumInputValues * 3);
+                if (MeasuredValues == NULL) {
+                    fprintf(
+                        stderr,
+                        "(Error) >> Cannot allocate MeasuredValues[%d,3] :(\n",
+                        NumInputValues);
                     exit(-1);
                 }
             }
-            else 
-            {
-                MeasuredValues = (double*)malloc(sizeof(double) * NumInputValues * 3);
-                if (MeasuredValues == NULL) 
-                {
-                    fprintf(stderr, "(Error) >> Cannot allocate MeasuredValues[%d,3] :(\n", NumInputValues);
-                    exit(-1);
-                }
-            }
-        }
-        else 
-        {
-            if (sscanf(filerow, "%lf %lf %lf",
-                &MeasuredValues[index2D(valrows, 0, NumInputValues)],  // X coord
-                &MeasuredValues[index2D(valrows, 1, NumInputValues)],  // Y coord
-                &MeasuredValues[index2D(valrows, 2, NumInputValues)])  // Measured value
-                < 3) 
-            {
-                fprintf(stderr, "(Error) >>> something went wrong while reading MeasuredValues(%d,*)", valrows);
+        } else {
+            if (sscanf(
+                    filerow, "%lf %lf %lf",
+                    &MeasuredValues[index2D(valrows, 0,
+                                            NumInputValues)], // X coord
+                    &MeasuredValues[index2D(valrows, 1,
+                                            NumInputValues)], // Y coord
+                    &MeasuredValues[index2D(valrows, 2,
+                                            NumInputValues)]) // Measured value
+                < 3) {
+                fprintf(stderr,
+                        "(Error) >>> something went wrong while reading "
+                        "MeasuredValues(%d,*)",
+                        valrows);
                 exit(-1);
             }
             valrows++;
-            if (valrows >= NumInputValues) break;
+            if (valrows >= NumInputValues)
+                break;
         }
     }
 
     /* Create and initialize FieldWeight */
-    FieldWeight = (int*)malloc(sizeof(int) * Xdots * Ydots);
-    if (FieldWeight == NULL) 
-    {
-        fprintf(stderr, "(Error) >> Cannot allocate FieldWeight[%d,%d]\n", Xdots, Ydots);
+    FieldWeight = (int *)malloc(sizeof(int) * Xdots * Ydots);
+    if (FieldWeight == NULL) {
+        fprintf(stderr, "(Error) >> Cannot allocate FieldWeight[%d,%d]\n",
+                Xdots, Ydots);
         exit(-1);
     }
     SetIntValue(FieldWeight, Xdots * Ydots, 0); // OPP: you can use calloc?
 
     /* Create and initialize FieldCoord */
-    FieldCoord = (double*)malloc(sizeof(double) * Xdots * Ydots * 2);
-    if (FieldCoord == NULL) 
-    {
-        fprintf(stderr, "(Error) >> Cannot allocate FieldCoord[%d,%d,2]\n", Xdots, Ydots);
+    FieldCoord = (double *)malloc(sizeof(double) * Xdots * Ydots * 2);
+    if (FieldCoord == NULL) {
+        fprintf(stderr, "(Error) >> Cannot allocate FieldCoord[%d,%d,2]\n",
+                Xdots, Ydots);
         exit(-1);
     }
-    SetDoubleValue(FieldCoord, Xdots * Ydots * 2, (double)0); // OPP: you can use calloc?
+    SetDoubleValue(FieldCoord, Xdots * Ydots * 2,
+                   (double)0); // OPP: you can use calloc?
 
     /* Now read Sreal, Simag, Rreal, Rimag */
     Sreal = Simag = Rreal = Rimag = 0.0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1) 
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Sreal from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#') continue;
-        if (sscanf(filerow, "%lf", &Sreal) < 1) 
-        {
+        if (filerow[0] == '#')
+            continue;
+        if (sscanf(filerow, "%lf", &Sreal) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Sreal from string.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Simag) < 1) 
-        {
+        if (fscanf(inpunit, "%lf", &Simag) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Simag from input file.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Rreal) < 1) 
-        {
+        if (fscanf(inpunit, "%lf", &Rreal) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Rreal from input file.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Rimag) < 1) 
-        {
+        if (fscanf(inpunit, "%lf", &Rimag) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Rimag from input file.\n");
             exit(-1);
         }
@@ -243,16 +249,15 @@ void InitGrid(char* InputFile)
 
     /* Now read MaxIters */
     MaxIters = 0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1) 
-        {
-            fprintf(stderr, "(Error) >> Cannot read MaxIters from input file.\n");
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
+            fprintf(stderr,
+                    "(Error) >> Cannot read MaxIters from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#' || rowlen(filerow) < 1) continue;
-        if (sscanf(filerow, "%d", &MaxIters) < 1) 
-        {
+        if (filerow[0] == '#' || rowlen(filerow) < 1)
+            continue;
+        if (sscanf(filerow, "%d", &MaxIters) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from string.\n");
             exit(-1);
         }
@@ -261,16 +266,15 @@ void InitGrid(char* InputFile)
 
     /* Now read TimeSteps */
     TimeSteps = 0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1) 
-        {
-            fprintf(stderr, "(Error) >> Cannot read MaxIters from input file.\n");
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
+            fprintf(stderr,
+                    "(Error) >> Cannot read MaxIters from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#' || rowlen(filerow) < 1) continue;
-        if (sscanf(filerow, "%d", &TimeSteps) < 1) 
-        {
+        if (filerow[0] == '#' || rowlen(filerow) < 1)
+            continue;
+        if (sscanf(filerow, "%d", &TimeSteps) < 1) {
             fprintf(stderr, "(Error) >> Cannot read TimeSteps from string.\n");
             exit(-1);
         }
@@ -281,11 +285,11 @@ void InitGrid(char* InputFile)
     return;
 }
 
-void FieldDistribution()
-{
+void FieldDistribution() {
     /*
     !  Compute theoretical value distribution of the perturbing field
-    !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution function
+    !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution
+    function
     */
     double *CoeffMatrix, *B;
     double x0, y0, x1, y1;
@@ -296,28 +300,31 @@ void FieldDistribution()
 
     fprintf(stdout, "\t>> Computing theoretical perturbing field...\n");
 
-    x0 = Sreal; 
-    y0 = Simag; 
-    x1 = x0 + Rreal; 
+    x0 = Sreal;
+    y0 = Simag;
+    x1 = x0 + Rreal;
     y1 = y0 + Rimag;
 
     // How many intervals? It should be safe to use SQRT(Xdots)
     M = sqrt((double)Xdots);
     N = sqrt((double)Ydots);
 
-    Nm1 = N - 1;  // Grid points minus boundary
-    Mm1 = M - 1;  // Grid points minus boundary
+    Nm1 = N - 1; // Grid points minus boundary
+    Mm1 = M - 1; // Grid points minus boundary
 
     LA = Mm1 * Nm1; // unknown points
     TSlopeLength = LA;
 
-    CoeffMatrix = (double*)malloc(sizeof(double) * LA * LA);
-    TheorSlope = (double*)malloc(sizeof(double) * TSlopeLength * 3);
-    B = (double*)malloc(sizeof(double) * LA);
+    CoeffMatrix = (double *)malloc(sizeof(double) * LA * LA);
+    TheorSlope = (double *)malloc(sizeof(double) * TSlopeLength * 3);
+    B = (double *)malloc(sizeof(double) * LA);
 
-    if (CoeffMatrix == NULL || TheorSlope == NULL || B == NULL) 
-    {
-        fprintf(stderr, "(Error) >> Cannot allocate memory. \nCoeffMatrix: %p; TheorSlope: %p, B: %p\n", CoeffMatrix, TheorSlope, B);
+    if (CoeffMatrix == NULL || TheorSlope == NULL || B == NULL) {
+        fprintf(
+            stderr,
+            "(Error) >> Cannot allocate memory. \nCoeffMatrix: %p; TheorSlope: "
+            "%p, B: %p\n",
+            CoeffMatrix, TheorSlope, B);
         exit(-1);
     }
 
@@ -326,17 +333,19 @@ void FieldDistribution()
     GridDef(x0, x1, y0, y1, N, TheorSlope);
 
     t0 = second();
-    if (ACCEL){
+    if (ACCEL) {
         rc = LinEquSolve_ACC(CoeffMatrix, LA, B);
     } else {
-        rc = LinEquSolve(CoeffMatrix,LA,B);
+        rc = LinEquSolve(CoeffMatrix, LA, B);
     }
     t1 = second();
-    fprintf(stdout, "\t>> LinEquSolve took %lf seconds\n", (t1-t0));
+    fprintf(stdout, "\t>> LinEquSolve took %lf seconds\n", (t1 - t0));
 
-    if (rc != 0) exit(-1);
+    if (rc != 0)
+        exit(-1);
 
-    for (i = 0; i < LA; i++) TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
+    for (i = 0; i < LA; i++)
+        TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
 
     free(CoeffMatrix);
     free(B);
@@ -344,8 +353,7 @@ void FieldDistribution()
     return;
 }
 
-void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
-{
+void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {
     /*
     !  Compute "heated" points
     !  Output:
@@ -363,10 +371,8 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
     Xinc = Sr / (double)Xdots;
     Yinc = Si / (double)Ydots;
 
-    for (iy = 0; iy < Ydots; iy++) 
-    {
-        for (ix = 0; ix < Xdots; ix++) 
-        {
+    for (iy = 0; iy < Ydots; iy++) {
+        for (ix = 0; ix < Xdots; ix++) {
             ca = Xinc * ix + Ir;
             cb = Yinc * iy + Ii;
             FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)] = ca;
@@ -374,9 +380,9 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
             rad = ca * ca * ((double)1.0 + (cb / ca) * (cb / ca));
             zan = 0.0;
             zbn = 0.0;
-            for (iz = 1; iz <= MaxIt; iz++) 
-            {
-                if (rad > (double)4.0) break;
+            for (iz = 1; iz <= MaxIt; iz++) {
+                if (rad > (double)4.0)
+                    break;
                 za = zan;
                 zb = zbn;
                 zan = ca + (za - zb) * (za + zb);
@@ -390,8 +396,7 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
     return;
 }
 
-void FieldInit()
-{
+void FieldInit() {
     /*
     ! Initialize field values in the grid. Values are computed on the basis
     ! of the measured values read in subroutine InitGrid and the gross grid
@@ -413,31 +418,34 @@ void FieldInit()
     fprintf(stdout, "\t>> Initializing entity of field effects...\n");
 
     /* Allocate FieldValues */
-    FieldValues = (double*)malloc(sizeof(double) * Xdots * Ydots * 2);
-    if (FieldValues == NULL) 
-    {
-        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate FieldValues[%d,%d,2]\n", Xdots, Ydots);
+    FieldValues = (double *)malloc(sizeof(double) * Xdots * Ydots * 2);
+    if (FieldValues == NULL) {
+        fprintf(stderr,
+                "(Error@FieldInit) >> Cannot allocate FieldValues[%d,%d,2]\n",
+                Xdots, Ydots);
         exit(-1);
     }
-    SetDoubleValue(FieldValues, Xdots * Ydots * 2, (double)0); // OPP: you can use calloc?
+    SetDoubleValue(FieldValues, Xdots * Ydots * 2,
+                   (double)0); // OPP: you can use calloc?
 
     /* Allocate DiffValues */
-    DiffValues = (double*)malloc(sizeof(double) * NumInputValues);
-    if (DiffValues == NULL) 
-    {
-        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d]\n", NumInputValues);
+    DiffValues = (double *)malloc(sizeof(double) * NumInputValues);
+    if (DiffValues == NULL) {
+        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d]\n",
+                NumInputValues);
         exit(-1);
     }
-    SetDoubleValue(DiffValues, NumInputValues, (double)0.0); // OPP: you can use calloc?
+    SetDoubleValue(DiffValues, NumInputValues,
+                   (double)0.0); // OPP: you can use calloc?
 
     /* Compute discrepancy between Measured and Theoretical value */
     DiscrValue = 0.0;
-    for (rv = 0; rv < NumInputValues; rv++) 
-    {
+    for (rv = 0; rv < NumInputValues; rv++) {
         xc = MeasuredValues[index2D(rv, 0, NumInputValues)];
         yc = MeasuredValues[index2D(rv, 1, NumInputValues)];
 
-        // TheorSlope is computed on the basis of a coarser grid, so look for the best values near xc, yc coordinates
+        // TheorSlope is computed on the basis of a coarser grid, so look for the
+        // best values near xc, yc coordinates
         sv = NearestValue(xc, yc, TSlopeLength, TheorSlope);
         ev = MeasuredValues[index2D(rv, 2, NumInputValues)];
 
@@ -448,11 +456,16 @@ void FieldInit()
 
     // Compute standard deviation
     sd = 0.0;
-    for (rv = 0; rv < NumInputValues; rv++) sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
+    for (rv = 0; rv < NumInputValues; rv++)
+        sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
     sd = sqrt(sd / (double)NumInputValues);
 
     // Print statistics
-    fprintf(stdout, "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, %12.3e\n", NumInputValues, DiscrValue, sd);
+    fprintf(
+        stdout,
+        "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, "
+        "%12.3e\n",
+        NumInputValues, DiscrValue, sd);
 
     // Compute FieldValues stage 1
     FieldPoints(DiscrValue);
@@ -462,8 +475,7 @@ void FieldInit()
     return;
 }
 
-void Cooling(int steps)
-{
+void Cooling(int steps) {
     /*
     !  Compute evolution of the effects of the field
     !  Input/Output:
@@ -479,20 +491,24 @@ void Cooling(int steps)
     sprintf(fname, "FieldValues0000");
 
     vmin = vmax = 0.0;
-    //RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
+    // RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)],
+    // &vmin, &vmax, fname);
     Statistics(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], 0);
 
     iz = 1;
-    for (it = 1; it <= steps; it++) 
-    {
+    for (it = 1; it <= steps; it++) {
         // Update the value of grid points
-        Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
+        Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)],
+               &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
         iz = 3 - iz;
 
-        // Print and show results 
+        // Print and show results
         sprintf(fname, "FieldValues%4.4d", it);
-        //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
-        Statistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
+        // if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0,
+        // iz
+        // - 1, Xdots, Ydots)], &vmin, &vmax, fname);
+        Statistics(Xdots, Ydots,
+                   &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
     }
 
     return;
@@ -500,25 +516,22 @@ void Cooling(int steps)
 
 /* SUB-FUNCTIONS */
 
-void GridDef(double x0, double x1, double y0, double y1, int N, double* Pts)
-{
+void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts) {
     double x, y, dx, dy;
     int i, j, np, Mm1, Nm1;
 
     Mm1 = sqrt((double)Xdots) - 1;
     Nm1 = sqrt((double)Ydots) - 1;
-    dx = (x1 - x0) / (double)N; 
+    dx = (x1 - x0) / (double)N;
     dy = (y1 - y0) / (double)N;
 
     np = -1;
-    for (i = 0; i < Mm1; i++) 
-    {
-        for (j = 0; j < Nm1; j++) 
-        {
+    for (i = 0; i < Mm1; i++) {
+        for (j = 0; j < Nm1; j++) {
             np++;
-            if (np > Mm1 * Nm1) 
-            {
-                fprintf(stderr, "(Error@GridDef) >> NP = %d > N*N = %d\n", np, Nm1 * Nm1);
+            if (np > Mm1 * Nm1) {
+                fprintf(stderr, "(Error@GridDef) >> NP = %d > N*N = %d\n", np,
+                        Nm1 * Nm1);
                 exit(-1);
             }
             x = x0 + dx * (double)(i + 1);
@@ -530,8 +543,8 @@ void GridDef(double x0, double x1, double y0, double y1, int N, double* Pts)
     return;
 }
 
-void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts)
-{
+void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A,
+            double *Rhs, double *Pts) {
     // Pts(LA,3) - inner grid point Coordinates
     // Rhs(LA)   - Linear equation Right Hand Side
     // A(LA,LA)  - Linear equation matrix
@@ -542,13 +555,13 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A
     //  Define A matrix and RHS
 
     Nm1 = N - 1;
-    dx = (x1 - x0) / (double)N; dy = (y1 - y0) / (double)N;
+    dx = (x1 - x0) / (double)N;
+    dy = (y1 - y0) / (double)N;
 
     SetDoubleValue(A, LA * LA, (double)0); // OPP: you can use calloc?
-    SetDoubleValue(Rhs, LA, (double)0); // OPP: you can use calloc?
+    SetDoubleValue(Rhs, LA, (double)0);    // OPP: you can use calloc?
 
-    for (np = 0; np < LA; np++) 
-    {
+    for (np = 0; np < LA; np++) {
         x = Pts[index2D(np, 0, TSlopeLength)];
         y = Pts[index2D(np, 1, TSlopeLength)];
 
@@ -556,60 +569,62 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A
 
         Rhs[np] = (x + y) * dx * dy;
 
-        // define Eps function of grid dimensions 
+        // define Eps function of grid dimensions
         Eps = (dx + dy) / 20.0;
 
-        // where is P(x-dx,y) ? 
-        if (fabs((x - dx) - x0) < Eps) Rhs[np] = Rhs[np] - Solution(x0, y);
-        else 
-        {
+        // where is P(x-dx,y) ?
+        if (fabs((x - dx) - x0) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x0, y);
+        else {
             // Find pos = position of P(x-dx,y)
             pos = np - Nm1;
-            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)) > Eps) 
-            {
-                fprintf(stderr, "(Error@EqsDef) >> x-dx: pos, np, d = %d %d %lf\n", pos, np, fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)));
+            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)) > Eps) {
+                fprintf(stderr,
+                        "(Error@EqsDef) >> x-dx: pos, np, d = %d %d %lf\n", pos,
+                        np,
+                        fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x+dx,y) ? 
-        if (fabs((x + dx) - x1) < Eps) Rhs[np] = Rhs[np] - Solution(x1, y);
-        else 
-        {
+        // where is P(x+dx,y) ?
+        if (fabs((x + dx) - x1) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x1, y);
+        else {
             // Find pos = position of P(x+dx,y)
             pos = np + Nm1;
-            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)) > Eps) 
-            {
-                fprintf(stderr, "(Error@EqsDef) >> x+dx: %lf\n", fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)));
+            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)) > Eps) {
+                fprintf(stderr, "(Error@EqsDef) >> x+dx: %lf\n",
+                        fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x,y-dy) ? 
-        if (fabs((y - dy) - y0) < Eps) Rhs[np] = Rhs[np] - Solution(x, y0);
-        else 
-        {
+        // where is P(x,y-dy) ?
+        if (fabs((y - dy) - y0) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x, y0);
+        else {
             // Find pos = position of P(x,y-dy)
             pos = np - 1;
-            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)) > Eps) 
-            {
-                fprintf(stderr, "(Error@EqsDef) >> y-dy: %lf\n", fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)));
+            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)) > Eps) {
+                fprintf(stderr, "(Error@EqsDef) >> y-dy: %lf\n",
+                        fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x,y+dy) ? 
-        if (fabs((y + dy) - y1) < Eps) Rhs[np] = Rhs[np] - Solution(x, y1);
-        else 
-        {
+        // where is P(x,y+dy) ?
+        if (fabs((y + dy) - y1) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x, y1);
+        else {
             // Find pos = position of P(x,y-dy)
             pos = np + 1;
-            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)) > Eps) 
-            {
-                fprintf(stderr, "(Error@EqsDef) >> y+dy: %lf\n", fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)));
+            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)) > Eps) {
+                fprintf(stderr, "(Error@EqsDef) >> y+dy: %lf\n",
+                        fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
@@ -618,23 +633,23 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A
     return;
 }
 
-double Solution(double x, double y)
-{
+double
+Solution(double x, double y) {
     return ((x * x * x) + (y * y * y)) / (double)6.0;
 }
 
 /**
  * result in h_b. h_A contains L matrix of LU factorization
-*/
-int LinEquSolve_ACC(double* h_A, // dense coefficient matrix
-    int n, // size (square) 
-    double* h_b) // A*x = b
+ */
+int LinEquSolve_ACC(double *h_A, // dense coefficient matrix
+                    int n,       // size (square)
+                    double *h_b) // A*x = b
 {
     cusolverDnHandle_t handle = NULL;
     cudaStream_t stream = NULL;
-    int rowsA = n; // number of rows of A
-    int colsA = n; // number of columns of A
-    int lda   = n; // leading dimension in dense matrix
+    int rowsA = n;      // number of rows of A
+    int colsA = n;      // number of columns of A
+    int lda = n;        // leading dimension in dense matrix
     double *h_r = NULL; // r = b - A*x, copy of d_r
 
     double *d_A = NULL; // gpu copy of h_A
@@ -651,70 +666,66 @@ int LinEquSolve_ACC(double* h_A, // dense coefficient matrix
     // checkCudaErrors(cublasSetStream(cublasHandle, stream));
 
     // allocate on device
-    checkCudaErrors(cudaMalloc((void **)&d_A, sizeof(double)*lda*colsA));
-    checkCudaErrors(cudaMalloc((void **)&d_b, sizeof(double)*rowsA));
-    checkCudaErrors(cudaMalloc((void **)&d_r, sizeof(double)*rowsA));
-    
+    checkCudaErrors(cudaMalloc((void **)&d_A, sizeof(double) * lda * colsA));
+    checkCudaErrors(cudaMalloc((void **)&d_b, sizeof(double) * rowsA));
+    checkCudaErrors(cudaMalloc((void **)&d_r, sizeof(double) * rowsA));
+
     // copy to device
-    checkCudaErrors(cudaMemcpy(d_A, h_A, sizeof(double)*lda*colsA, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_b, h_b, sizeof(double)*rowsA, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_A, h_A, sizeof(double) * lda * colsA,
+                               cudaMemcpyHostToDevice));
+    checkCudaErrors(
+        cudaMemcpy(d_b, h_b, sizeof(double) * rowsA, cudaMemcpyHostToDevice));
 
     // actually solve
     linearSolverLU(handle, rowsA, d_A, lda, d_b);
 
     // copy result to b
-    checkCudaErrors(cudaMemcpy(h_b, d_b, sizeof(double)*colsA, cudaMemcpyDeviceToHost));
+    checkCudaErrors(
+        cudaMemcpy(h_b, d_b, sizeof(double) * colsA, cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaDeviceSynchronize());
 
     return 0;
 }
 
-int LinEquSolve(double* a, int n, double* b)
-{
+int LinEquSolve(double *a, int n, double *b) {
     /* Gauss-Jordan elimination algorithm */
     int i, j, k, l, icol, irow;
     int *indcol, *indrow, *ipiv;
     double bigger, temp;
 
     /* Allocate indcol */
-    indcol = (int*)malloc(sizeof(int) * n);
-    if (indcol == NULL) 
-    {
-        fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indcol[%d]\n", n);
-        return(-1);
+    indcol = (int *)malloc(sizeof(int) * n);
+    if (indcol == NULL) {
+        fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indcol[%d]\n",
+                n);
+        return (-1);
     }
 
     /* Allocate indrow */
-    indrow = (int*)malloc(sizeof((int)1) * n);
-    if (indrow == NULL) 
-    {
-        fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indrow[%d]\n", n);
-        return(-1);
+    indrow = (int *)malloc(sizeof((int)1) * n);
+    if (indrow == NULL) {
+        fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indrow[%d]\n",
+                n);
+        return (-1);
     }
 
     /* Allocate ipiv */
-    ipiv = (int*)malloc(sizeof((int)1) * n);
-    if (ipiv == NULL) 
-    {
+    ipiv = (int *)malloc(sizeof((int)1) * n);
+    if (ipiv == NULL) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate ipiv[%d]\n", n);
-        return(-1);
+        return (-1);
     }
     SetIntValue(ipiv, n, 0); // OPP: you can use calloc?
 
     /* Actual algorithm */
 
-    for (i = 0; i < n; i++) 
-    {
+    for (i = 0; i < n; i++) {
         bigger = 0.0;
 
-        for (j = 0; j < n; j++) 
-        {
-            if (ipiv[j] != 1) 
-            {
-                for (k = 0; k < n; k++) 
-                {
-                    if (ipiv[k] == 0 && bigger <= fabs(a[index2D(j, k, n)])) 
-                    {
+        for (j = 0; j < n; j++) {
+            if (ipiv[j] != 1) {
+                for (k = 0; k < n; k++) {
+                    if (ipiv[k] == 0 && bigger <= fabs(a[index2D(j, k, n)])) {
                         bigger = fabs(a[index2D(j, k, n)]);
                         irow = j;
                         icol = k;
@@ -725,10 +736,8 @@ int LinEquSolve(double* a, int n, double* b)
 
         ipiv[icol] = ipiv[icol] + 1;
 
-        if (irow != icol) 
-        {
-            for (l = 0; l < n; l++) 
-            {
+        if (irow != icol) {
+            for (l = 0; l < n; l++) {
                 temp = a[index2D(irow, l, n)];
                 a[index2D(irow, l, n)] = a[index2D(icol, l, n)];
                 a[index2D(icol, l, n)] = temp;
@@ -741,27 +750,25 @@ int LinEquSolve(double* a, int n, double* b)
         indrow[i] = irow;
         indcol[i] = icol;
 
-        if (a[index2D(icol, icol, n)] == 0.0) 
-        {
-            fprintf(stderr, "(Error@LinEquSolve) >> a(%d,%d): singular matrix!", icol, icol);
+        if (a[index2D(icol, icol, n)] == 0.0) {
+            fprintf(stderr, "(Error@LinEquSolve) >> a(%d,%d): singular matrix!",
+                    icol, icol);
             return -2;
         }
 
         temp = (double)1.0 / a[index2D(icol, icol, n)];
         a[index2D(icol, icol, n)] = 1.0;
 
-        for (l = 0; l < n; l++) a[index2D(icol, l, n)] = a[index2D(icol, l, n)] * temp;
+        for (l = 0; l < n; l++)
+            a[index2D(icol, l, n)] = a[index2D(icol, l, n)] * temp;
 
         b[icol] = b[icol] * temp;
 
-        for (l = 0; l < n; l++) 
-        {
-            if (l != icol) 
-            {
+        for (l = 0; l < n; l++) {
+            if (l != icol) {
                 temp = a[index2D(l, icol, n)];
                 a[index2D(l, icol, n)] = 0.0;
-                for (k = 0; k < n; k++) 
-                {
+                for (k = 0; k < n; k++) {
                     a[index2D(l, k, n)] = a[index2D(l, k, n)] - a[index2D(icol, k, n)] * temp;
                 }
                 b[l] = b[l] - b[icol] * temp;
@@ -769,12 +776,9 @@ int LinEquSolve(double* a, int n, double* b)
         }
     }
 
-    for (l = n - 1; l >= 0; l--) 
-    {
-        if (indrow[l] != indcol[l]) 
-        {
-            for (k = 0; k < n; k++) 
-            {
+    for (l = n - 1; l >= 0; l--) {
+        if (indrow[l] != indcol[l]) {
+            for (k = 0; k < n; k++) {
                 temp = a[index2D(k, indrow[l], n)];
                 a[index2D(k, indrow[l], n)] = a[index2D(k, indcol[l], n)];
                 a[index2D(k, indcol[l], n)] = temp;
@@ -789,36 +793,31 @@ int LinEquSolve(double* a, int n, double* b)
     return 0;
 }
 
-double NearestValue(double xc, double yc, int ld, double* Values)
-{
+double
+NearestValue(double xc, double yc, int ld, double *Values) {
     // look for the best values near xc, yc coordinates
     double v;
 
     double d, md; // minimum distance
-    int np; // number of nearest points
+    int np;       // number of nearest points
     int i;
 
-    md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) +
-         ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
+    md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) + ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
 
     // Compute lowest distance
-    for (i = 0; i < ld; i++) 
-    {
-        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
-            ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md > d) md = d;
+    for (i = 0; i < ld; i++) {
+        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) + ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
+        if (md > d)
+            md = d;
     }
 
     np = 0;
     v = 0.0;
 
     // Compute nearest value
-    for (i = 0; i < ld; i++) 
-    {
-        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
-            ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md == d) 
-        {
+    for (i = 0; i < ld; i++) {
+        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) + ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
+        if (md == d) {
             // add contributed value
             np = np + 1;
             v = v + Values[index2D(i, 2, ld)];
@@ -831,8 +830,7 @@ double NearestValue(double xc, double yc, int ld, double* Values)
     return v;
 }
 
-void FieldPoints(double Diff)
-{
+void FieldPoints(double Diff) {
     int ix, iy;
     double xc, yc, sv;
     double rmin, rmax;
@@ -840,10 +838,8 @@ void FieldPoints(double Diff)
     rmax = MaxIntVal(Xdots * Ydots, FieldWeight);
     rmin = MinIntVal(Xdots * Ydots, FieldWeight);
 
-    for (iy = 0; iy < Ydots; iy++) 
-    {
-        for (ix = 0; ix < Xdots; ix++) 
-        {
+    for (iy = 0; iy < Ydots; iy++) {
+        for (ix = 0; ix < Xdots; ix++) {
             xc = FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)];
             yc = FieldCoord[index3D(ix, iy, 1, Xdots, Ydots)];
 
@@ -853,12 +849,10 @@ void FieldPoints(double Diff)
         }
     }
 
-    // Copy initial status 
+    // Copy initial status
     // OPP: use memcpy?
-    for (iy = 0; iy < Ydots; iy++) 
-    {
-        for (ix = 0; ix < Xdots; ix++) 
-        {
+    for (iy = 0; iy < Ydots; iy++) {
+        for (ix = 0; ix < Xdots; ix++) {
             FieldValues[index3D(ix, iy, 1, Xdots, Ydots)] = FieldValues[index3D(ix, iy, 0, Xdots, Ydots)];
         }
     }
@@ -866,29 +860,30 @@ void FieldPoints(double Diff)
     return;
 }
 
-void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name)
-{
+void RealData2ppm(int s1, int s2, double *rdata, double *vmin, double *vmax,
+                  char *name) {
     /* Simple subroutine to dump integer data in h_A PPM format */
 
-    int cm[3][256];  /* R,G,B, Colour Map */
-    FILE* ouni, * ColMap;
+    int cm[3][256]; /* R,G,B, Colour Map */
+    FILE *ouni, *ColMap;
     int i, j, rc, vp, vs;
-    double  rmin, rmax;
-    char  fname[80], jname[80], command[80];
+    double rmin, rmax;
+    char fname[80], jname[80], command[80];
 
     /* Load color map: 256 colours */
     ColMap = fopen("ColorMap.txt", "r");
-    if (ColMap == NULL) 
-    {
+    if (ColMap == NULL) {
         fprintf(stderr, "(Error@RealData2ppm) >> Cannot open ColorMap.txt\n");
         exit(-1);
     }
-    for (i = 0; i < 256; i++) 
-    {
-        if (fscanf(ColMap, " %3d %3d %3d", &cm[0][i], &cm[1][i], &cm[2][i]) < 3) 
-        {
-            fprintf(stderr, "(Error@RealData2ppm) >> reading colour map at line %d: r, g, h_b =", (i + 1));
-            fprintf(stderr, " %3.3d %3.3d %3.3d\n", cm[0][i], cm[1][i], cm[2][i]);
+    for (i = 0; i < 256; i++) {
+        if (fscanf(ColMap, " %3d %3d %3d", &cm[0][i], &cm[1][i], &cm[2][i]) < 3) {
+            fprintf(stderr,
+                    "(Error@RealData2ppm) >> reading colour map at line %d: r, "
+                    "g, h_b =",
+                    (i + 1));
+            fprintf(stderr, " %3.3d %3.3d %3.3d\n", cm[0][i], cm[1][i],
+                    cm[2][i]);
             exit(1);
         }
     }
@@ -899,7 +894,9 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     strcat(fname, ".ppm\0");
 
     ouni = fopen(fname, "w");
-    if (!ouni) fprintf(stderr, "(Error@RealData2ppm) >> write access to file %s\n", fname);
+    if (!ouni)
+        fprintf(stderr, "(Error@RealData2ppm) >> write access to file %s\n",
+                fname);
 
     /*  Magic code */
     fprintf(ouni, "P3\n");
@@ -911,36 +908,33 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     fprintf(ouni, "255\n");
 
     /*  Values from 0 to 255 */
-    rmin = MinDoubleVal(s1 * s2, rdata); 
+    rmin = MinDoubleVal(s1 * s2, rdata);
     rmax = MaxDoubleVal(s1 * s2, rdata);
 
-    if ((*vmin == *vmax) && (*vmin == (double)0.0)) 
-    {
-        *vmin = rmin; 
+    if ((*vmin == *vmax) && (*vmin == (double)0.0)) {
+        *vmin = rmin;
         *vmax = rmax;
-    }
-    else 
-    {
-        rmin = *vmin; 
+    } else {
+        rmin = *vmin;
         rmax = *vmax;
     }
 
     vs = 0;
-    for (i = 0; i < s1; i++) 
-    {
-        for (j = 0; j < s2; j++) 
-        {
+    for (i = 0; i < s1; i++) {
+        for (j = 0; j < s2; j++) {
             vp = (int)((rdata[i + (j * s1)] - rmin) * 255.0 / (rmax - rmin));
 
-            if (vp < 0) vp = 0;
-            if (vp > 255) vp = 255;
+            if (vp < 0)
+                vp = 0;
+            if (vp > 255)
+                vp = 255;
 
             vs++;
 
-            fprintf(ouni, " %3.3d %3.3d %3.3d", cm[0][vp], cm[1][vp], cm[2][vp]);
+            fprintf(ouni, " %3.3d %3.3d %3.3d", cm[0][vp], cm[1][vp],
+                    cm[2][vp]);
 
-            if (vs >= 10) 
-            {
+            if (vs >= 10) {
                 fprintf(ouni, " \n");
                 vs = 0;
             }
@@ -953,45 +947,44 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     return;
 }
 
-void Statistics(int s1, int s2, double* rdata, int step)
-{
+void Statistics(int s1, int s2, double *rdata, int step) {
     double mnv, mv, mxv, sd;
     int i, j;
 
     // OPP: Can mean value and standard deviation be computed together?
 
-    // Compute MEAN VALUE 
+    // Compute MEAN VALUE
     mv = 0.0;
     mnv = mxv = rdata[0];
-    for (i = 0; i < s1; i++) 
-    {
-        for (j = 0; j < s2; j++) 
-        {
+    for (i = 0; i < s1; i++) {
+        for (j = 0; j < s2; j++) {
             mv = mv + rdata[i + (j * s1)];
-            if (mnv > rdata[i + (j * s1)]) mnv = rdata[i + (j * s1)];
-            if (mxv < rdata[i + (j * s1)]) mxv = rdata[i + (j * s1)];
+            if (mnv > rdata[i + (j * s1)])
+                mnv = rdata[i + (j * s1)];
+            if (mxv < rdata[i + (j * s1)])
+                mxv = rdata[i + (j * s1)];
         }
     }
     mv = mv / (double)(s1 * s2);
 
     // Compute STANDARD DEVIATION
     sd = 0.0;
-    for (i = 0; i < s1; i++) 
-    {
-        for (j = 0; j < s2; j++) 
-        {
+    for (i = 0; i < s1; i++) {
+        for (j = 0; j < s2; j++) {
             sd = sd + (rdata[i + (j * s1)] - mv) * (rdata[i + (j * s1)] - mv);
         }
     }
     sd = sqrt(sd / (double)(s1 * s2));
 
-    fprintf(stdout, ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n", step, mnv, mv, mxv, sd);
+    fprintf(
+        stdout,
+        ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n",
+        step, mnv, mv, mxv, sd);
 
     return;
 }
 
-void Update(int xdots, int ydots, double* u1, double* u2)
-{
+void Update(int xdots, int ydots, double *u1, double *u2) {
     /* Compute next step using matrices g1, g2 of dimension (nr,nc) */
 
     int i, j;
@@ -1006,37 +999,28 @@ void Update(int xdots, int ydots, double* u1, double* u2)
     CX = dd / (hx * hx);
     CY = dd / (hy * hy);
 
-    for (j = 0; j < ydots - 1; j++) 
-    {
-        for (i = 0; i < xdots - 1; i++) 
-        {
-            if (i <= 0 || i >= xdots - 1) 
-            {
+    for (j = 0; j < ydots - 1; j++) {
+        for (i = 0; i < xdots - 1; i++) {
+            if (i <= 0 || i >= xdots - 1) {
                 u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
                 continue;
             }
 
-            if (j <= 0 || j >= ydots - 1) 
-            {
+            if (j <= 0 || j >= ydots - 1) {
                 u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
                 continue;
             }
 
-            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)]
-                                       + u1[index2D((i + 1), j, xdots)] + dgx * u1[index2D((i + 1), j, xdots)])
-                                       + CY * (u1[index2D(i, (j - 1), xdots)]
-                                       + u1[index2D(i, (j + 1), xdots)] + dgy * u1[index2D(i, j, xdots)]);
+            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)] + u1[index2D((i + 1), j, xdots)] + dgx * u1[index2D((i + 1), j, xdots)]) + CY * (u1[index2D(i, (j - 1), xdots)] + u1[index2D(i, (j + 1), xdots)] + dgy * u1[index2D(i, j, xdots)]);
         }
     }
 
-    for (j = 0; j < ydots - 1; j++) 
-    {
+    for (j = 0; j < ydots - 1; j++) {
         u2[index2D(0, j, xdots)] = u2[index2D(1, j, xdots)];
         u2[index2D(Xdots - 1, j, xdots)] = u2[index2D(Xdots - 2, j, xdots)];
     }
 
-    for (i = 0; i < xdots - 1; i++) 
-    {
+    for (i = 0; i < xdots - 1; i++) {
         u2[index2D(i, 0, xdots)] = u2[index2D(i, 1, xdots)];
         u2[index2D(i, Ydots - 1, xdots)] = u2[index2D(i, Ydots - 2, xdots)];
     }
@@ -1045,29 +1029,32 @@ void Update(int xdots, int ydots, double* u1, double* u2)
 }
 
 /* CHECK CORRECT RESULTS */
-int checkACCLinEquSolve(double* h_A,
-                        double* h_b,
+int checkACCLinEquSolve(double *h_A, double *h_b,
                         int n // size
-){
+) {
     double *result_seq = h_b;
     double *result_acc = NULL;
     int rc;
-    result_acc = (double*)malloc(sizeof(double)*n);
-    memcpy(result_acc, h_b, sizeof(double)*n);
-    
+    result_acc = (double *)malloc(sizeof(double) * n);
+    memcpy(result_acc, h_b, sizeof(double) * n);
+
     rc = LinEquSolve_ACC(h_A, n, result_acc);
-    if(rc != 0) exit(EXIT_FAILURE);
+    if (rc != 0)
+        exit(EXIT_FAILURE);
     fprintf(stdout, "\t>> LinEquSolve_CUDA completed");
-    rc = LinEquSolve(h_A,n,result_seq);
-    if(rc != 0) exit(EXIT_FAILURE);
+    rc = LinEquSolve(h_A, n, result_seq);
+    if (rc != 0)
+        exit(EXIT_FAILURE);
     fprintf(stdout, "\t>> LinEquSolve completed");
 
-    for(int i=0;i<n;i++){
-        result_seq[i] -=result_acc[i];
+    for (int i = 0; i < n; i++) {
+        result_seq[i] -= result_acc[i];
     }
     double ninf = -1;
-    for(int i=0;i<n;i++)
+    for (int i = 0; i < n; i++)
         ninf = max(ninf, abs(result_seq[i]));
 
-    printf("---------maximum difference between solutions is %f. Good enough?\n", ninf);
+    printf(
+        "---------maximum difference between solutions is %f. Good enough?\n",
+        ninf);
 }
