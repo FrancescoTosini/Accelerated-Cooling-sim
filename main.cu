@@ -37,6 +37,7 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
 // Global GPU variables
 
 __device__ int maxRow, maxCol;
+__device__ double temp;
 
 /* CODE */
 
@@ -68,11 +69,13 @@ __device__ int maxRow, maxCol;
     __device__ double gpuSolution(double x, double y);
 
     int gpuLinEquSolve(double* a, int n, double* b);
-    __global__ void gpuFindMax(double* maxima, int* maxIndex, double* a, int* ipiv, int n);
-    __global__ void gpuGJStep(double* a, double* b, int n, int* indrow, int* indcol);
-
     __global__ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, int* indrow, int* indcol, int* ipiv, int n);
 
+    void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
+    __global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double* FieldCoord, int* FieldWeight);
+
+    double gpuNearestValue(double xc, double yc, int ld, double* Values);
+    __global__ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, int* mask, double* partialResult, int n);
 
 int main(int argc, char* argv[])
 {
@@ -93,14 +96,13 @@ int main(int argc, char* argv[])
     p1 = clock();
     fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
-    /*
-
     // FieldCoord(Xdots,Ydots,2), FieldWeight(Xdots,Ydots)
     p0 = clock();
-    SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
+    gpuSensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
     p1 = clock();
     fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
+    /*
     // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
     p0 = clock();
     FieldInit();
@@ -112,12 +114,11 @@ int main(int argc, char* argv[])
     Cooling(TimeSteps);
     p1 = clock();
     fprintf(stdout, ">> Cooling ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    */
 
     t1 = clock();
     fprintf(stdout, ">> Computations ended in %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
-
-    */
-
+    
     // End Program
 
     cudaFree(MeasuredValues);
@@ -634,11 +635,7 @@ void gpuFieldDistribution()
     gpuLinEquSolve(CoeffMatrix, LA, B);
     cudaDeviceSynchronize();
 
-    //if (rc != 0) exit(-1);
-
-    /*
-    for (i = 0; i < LA; i++) TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
-    */
+    cudaMemcpy(&TheorSlope[2 * TSlopeLength], B, sizeof(double) * LA, cudaMemcpyDeviceToDevice);
 
     cudaFree(CoeffMatrix);
     cudaFree(B);
@@ -690,6 +687,75 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
     }
 
     return;
+}
+
+void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
+{
+    /*
+    !  Compute "heated" points
+    !  Output:
+    !          FieldCoord(Xdots,Ydots,2)
+    !          FieldWeight(Xdots,Ydots)
+   */
+
+    double Xinc, Yinc;
+
+    cudaError_t err;
+
+    fprintf(stdout, "\t>> Computing sensitivity to field effects...\n");
+
+    Xinc = Sr / (double)Xdots;
+    Yinc = Si / (double)Ydots;
+
+    gpuSensiblePointsKernel<<<dim3(8,8,4), dim3(8,8,2)>>>(Ir, Ii, Xinc, Yinc, MaxIt, FieldCoord, FieldWeight);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) printf("(CUDA Error) >> %s\n", cudaGetErrorString(err));
+
+    return;
+}
+
+__global__
+void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double *FieldCoord, int *FieldWeight)
+{
+    double ca, cb, za, zb;
+    double rad, zan, zbn;
+
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int idy = threadIdx.y + blockIdx.y * blockDim.y;
+    int idz = threadIdx.z + blockIdx.z * blockDim.z;
+
+    int sizeX = gridDim.x * blockDim.x;
+    int sizeY = gridDim.y * blockDim.y;
+    int sizeZ = gridDim.z * blockDim.z;
+
+    int ix, iy, iz;
+
+    for (iy = idy; iy < Ydots; iy += sizeY)
+    {
+        for (ix = idx; ix < Xdots; ix += sizeX)
+        {
+            ca = Xinc * ix + Ir;
+            cb = Yinc * iy + Ii;
+            FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)] = ca;
+            FieldCoord[index3D(ix, iy, 1, Xdots, Ydots)] = cb;
+            rad = ca * ca * ((double)1.0 + (cb / ca) * (cb / ca));
+            zan = 0.0;
+            zbn = 0.0;
+            for (iz = idz; iz <= MaxIt; iz += sizeZ)
+            {
+                if (iz == 0) break;
+                if (rad > (double)4.0) break;
+                za = zan;
+                zb = zbn;
+                zan = ca + (za - zb) * (za + zb);
+                zbn = 2.0 * (za * zb + cb / 2.0);
+                rad = zan * zan * ((double)1.0 + (zbn / zan) * (zbn / zan));
+            }
+            FieldWeight[index2D(ix, iy, Xdots)] = iz;
+        }
+    }
 }
 
 void FieldInit()
@@ -760,6 +826,82 @@ void FieldInit()
     FieldPoints(DiscrValue);
 
     free(DiffValues);
+
+    return;
+}
+
+void gpuFieldInit()
+{
+    /*
+    ! Initialize field values in the grid. Values are computed on the basis
+    ! of the measured values read in subroutine InitGrid and the gross grid
+    ! values computed in subroutine FieldDistribution. Moreover sensitiveness
+    ! to field effects as computed in subroutine SensiblePoints are taken into
+    ! account.
+    !
+    ! Input:
+    !        MeasuredValues(:,3)
+    !        FieldWeight(Xdots,Ydots)
+    ! Output:
+    !        FieldValues(Xdots,Ydots,2)
+    */
+
+    int rv;
+    double xc, yc, ev, sv, sd, DiscrValue;
+    double* DiffValues;
+
+    cudaError_t err;
+
+    fprintf(stdout, "\t>> Initializing entity of field effects...\n");
+
+    /* Allocate FieldValues */
+    err = cudaMalloc(&FieldValues, sizeof(double) * Xdots * Ydots * 2);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate FieldValues[%d,%d,2] in GPU\n", Xdots, Ydots);
+        exit(-1);
+    }
+    cudaMemset(FieldValues, 0, sizeof(double) * Xdots * Ydots * 2);
+
+    /* Allocate DiffValues */
+    err = cudaMalloc(&DiffValues, sizeof(double) * NumInputValues);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d] in GPU\n", NumInputValues);
+        exit(-1);
+    }
+    cudaMemset(DiffValues, 0, sizeof(double) * NumInputValues);
+
+    ///////////////////////////////////////////
+
+    /* Compute discrepancy between Measured and Theoretical value */
+    DiscrValue = 0.0;
+    for (rv = 0; rv < NumInputValues; rv++)
+    {
+        xc = MeasuredValues[index2D(rv, 0, NumInputValues)];
+        yc = MeasuredValues[index2D(rv, 1, NumInputValues)];
+
+        // TheorSlope is computed on the basis of a coarser grid, so look for the best values near xc, yc coordinates
+        sv = NearestValue(xc, yc, TSlopeLength, TheorSlope);
+        ev = MeasuredValues[index2D(rv, 2, NumInputValues)];
+
+        DiffValues[rv] = ev - sv;
+        DiscrValue += ev - sv;
+    }
+    DiscrValue = DiscrValue / (double)NumInputValues;
+
+    // Compute standard deviation
+    sd = 0.0;
+    for (rv = 0; rv < NumInputValues; rv++) sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
+    sd = sqrt(sd / (double)NumInputValues);
+
+    // Print statistics
+    fprintf(stdout, "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, %12.3e\n", NumInputValues, DiscrValue, sd);
+
+    // Compute FieldValues stage 1
+    FieldPoints(DiscrValue);
+
+    cudaFree(DiffValues);
 
     return;
 }
@@ -1221,8 +1363,11 @@ int gpuLinEquSolve(double* a, int n, double* b)
         return(-1);
     }
 
-    gpuLinEquSolveKernel<<<1, 1024>>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
+    gpuLinEquSolveKernel<<<16, 256>>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
     cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) printf("(CUDA Error) >> %s\n", cudaGetErrorString(err));
 
     cudaFree(indcol);
     cudaFree(indrow);
@@ -1234,137 +1379,17 @@ int gpuLinEquSolve(double* a, int n, double* b)
 }
 
 __global__
-void gpuFindMax(double* maxima, int* maxIndex, double* a, int* ipiv, int n)
-{
-    int j, k, icol, redSize;
-    double max;
-
-    for (j = threadIdx.x; j < n; j += blockDim.x)
-    {
-        max = 0;
-
-        if (ipiv[j] != 1)
-        {
-            for (k = 0; k < n; k++)
-            {
-                if (ipiv[k] == 0 && max <= fabs(a[index2D(j, k, n)]))
-                {
-                    max = fabs(a[index2D(j, k, n)]);
-                    icol = k;
-                }
-            }
-        }
-
-        maxima[j] = max;
-        maxIndex[j] = icol;
-    }
-
-    __syncthreads();
-
-    for (j = threadIdx.x; j < n; j += blockDim.x)
-    {
-        if (j % 2 == 0 && (j+1) < n)
-        {
-            if (maxima[j] < maxima[j + 1])
-            {
-                maxima[j] = maxima[j + 1];
-                maxIndex[j] = maxIndex[j + 1];
-            }
-        }
-    }
-
-    __syncthreads();
-
-    if (threadIdx.x == 0)
-    {
-        icol = 0;
-
-        for (j = 2; j < n; j += 2)
-            if (maxima[j] > maxima[icol]) icol = j;
-
-        maxRow = icol;
-        maxCol = maxIndex[icol];
-
-        ipiv[maxCol] = ipiv[maxCol] + 1;
-    }
-}
-
-__global__
-void gpuGJStep(double* a, double* b, int n, int* indrow, int* indcol)
-{
-    int i, k;
-    double tmp;
-
-    __shared__ double temp;
-
-    if (maxRow != maxCol) 
-    {
-        for (i = threadIdx.x; i < n; i += blockDim.x)
-        {
-            tmp = a[index2D(maxRow, i, n)];
-            a[index2D(maxRow, i, n)] = a[index2D(maxCol, i, n)];
-            a[index2D(maxCol, i, n)] = tmp;
-        }
-
-        if (threadIdx.x == 0)
-        {
-            tmp = b[maxRow];
-            b[maxRow] = b[maxCol];
-            b[maxCol] = tmp;
-        }
-    }
-
-    if (threadIdx.x == 0)
-    {
-        indrow[i] = maxRow;
-        indcol[i] = maxCol;
-    }
-
-    __syncthreads();
-
-    // TODO: Missing check on singularity
-
-    if (threadIdx.x == 0)
-    {
-        temp = (double)1.0 / a[index2D(maxCol, maxCol, n)];
-
-        //TODO: check if it is an error
-        //a[index2D(maxCol, maxCol, n)] = 1.0; 
-
-        b[maxCol] = b[maxCol] * temp;
-    }
-
-    __syncthreads();
-
-    for (i = threadIdx.x; i < n; i += blockDim.x)
-        a[index2D(maxCol, i, n)] = a[index2D(maxCol, i, n)] * temp;
-
-    __syncthreads();
-
-    for (i = threadIdx.x; i < n; i += blockDim.x)
-    {
-        if (i != maxCol)
-        {
-            tmp = a[index2D(i, maxCol, n)];
-            a[index2D(i, maxCol, n)] = 0.0;
-            for (k = 0; k < n; k++)
-                a[index2D(i, k, n)] = a[index2D(i, k, n)] - a[index2D(maxCol, k, n)] * tmp;
-            b[i] = b[i] - b[maxCol] * tmp;
-        }
-    }
-}
-
-__global__
 void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, int* indrow, int* indcol, int* ipiv, int n)
 {
-    int iter, i, j, k, icol, redSize;
-    double max, tmp;
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+    int gridSize = blockDim.x * gridDim.x;
 
-    __shared__ double temp;
+    int iter, i, j, k, icol;
+    double max, tmp;
 
     for (iter = 0; iter < n; iter++)
     {
-        for (j = threadIdx.x; j < n; j += blockDim.x)
+        for (j = id; j < n; j += gridSize)
         {
             max = 0;
 
@@ -1386,7 +1411,7 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         __syncthreads();
 
-        for (j = threadIdx.x; j < n; j += blockDim.x)
+        for (j = id; j < n; j += gridSize)
         {
             if (j % 2 == 0 && (j + 1) < n)
             {
@@ -1400,7 +1425,7 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         __syncthreads();
 
-        if (threadIdx.x == 0)
+        if (id == 0)
         {
             icol = 0;
 
@@ -1417,14 +1442,14 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         if (maxRow != maxCol)
         {
-            for (i = threadIdx.x; i < n; i += blockDim.x)
+            for (i = id; i < n; i += gridSize)
             {
                 tmp = a[index2D(maxRow, i, n)];
                 a[index2D(maxRow, i, n)] = a[index2D(maxCol, i, n)];
                 a[index2D(maxCol, i, n)] = tmp;
             }
 
-            if (threadIdx.x == 0)
+            if (id == 0)
             {
                 tmp = b[maxRow];
                 b[maxRow] = b[maxCol];
@@ -1432,7 +1457,7 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
             }
         }
 
-        if (threadIdx.x == 0)
+        if (id == 0)
         {
             indrow[i] = maxRow;
             indcol[i] = maxCol;
@@ -1442,7 +1467,7 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         // TODO: Missing check on singularity
 
-        if (threadIdx.x == 0)
+        if (id == 0)
         {
             temp = (double)1.0 / a[index2D(maxCol, maxCol, n)];
 
@@ -1454,12 +1479,12 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         __syncthreads();
 
-        for (i = threadIdx.x; i < n; i += blockDim.x)
+        for (i = id; i < n; i += gridSize)
             a[index2D(maxCol, i, n)] = a[index2D(maxCol, i, n)] * temp;
 
         __syncthreads();
 
-        for (i = threadIdx.x; i < n; i += blockDim.x)
+        for (i = id; i < n; i += gridSize)
         {
             if (i != maxCol)
             {
@@ -1476,7 +1501,7 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
     // Last step
 
-    for (j = threadIdx.x; j < n; j += blockDim.x)
+    for (j = id; j < n; j += gridSize)
     {
         if (indrow[j] != indcol[j])
         {
@@ -1530,6 +1555,102 @@ double NearestValue(double xc, double yc, int ld, double* Values)
     v = v / (double)np;
 
     return v;
+}
+
+double gpuNearestValue(double xc, double yc, int ld, double* Values)
+{
+    double* dist;
+    int* mask;
+    double* partialResult;
+
+    cudaError_t err;
+
+    /* Allocate dist */
+    err = cudaMalloc(&dist, sizeof(double) * ld);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> Cannot allocate dist in GPU\n");
+        exit(-1);
+    }
+
+    /* Allocate mask */
+    err = cudaMalloc(&mask, sizeof(int) * ld);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> Cannot allocate mask in GPU\n");
+        exit(-1);
+    }
+
+    /* Allocate partialResult */
+    err = cudaMalloc(&partialResult, sizeof(double) * ld);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> Cannot allocate partialResult in GPU\n");
+        exit(-1);
+    }
+
+    gpuNearestValueKernel(xc, yc, Values, dist, mask, partialResult, ld);
+
+    cudaFree(dist);
+    cudaFree(mask);
+    cudaFree(partialResult);
+
+    return 0;
+}
+
+__global__
+void gpuNearestValueKernel(double xc, double yc, double* Values, double *dist, int *mask, double *partialResult, int n)
+{
+    int i;
+    double a, b;
+    __shared__ int np;
+    __shared__ double md, v;
+
+    // Compute distances
+
+    for (i = threadIdx.x; i < n; i += blockDim.x)
+    {
+        a = xc - Values[index2D(i, 0, n)];
+        b = yc - Values[index2D(i, 1, n)];
+        dist[i] = a * a + b * b;
+    }
+    __syncthreads();
+
+    // Compute lowest distance
+
+    if (threadIdx.x == 0)
+    {
+        md = dist[0];
+
+        for (i = 1; i < n; i++)
+            if (dist[i] < md) md = dist[i];
+    }
+    __syncthreads();
+
+    // Compute nearest value
+
+    for (i = threadIdx.x; i < n; i += blockDim.x)
+    {
+        mask[i] = (dist[i] == md);
+        partialResult[i] = (dist[i] == md) * Values[index2D(i, 2, n)];
+    }
+    __syncthreads();
+
+    // Reduce
+
+    if (threadIdx.x == 0)
+    {
+        np = 0;
+        v = 0.0;
+
+        for (i = 1; i < n; i++)
+        {
+            np = np + mask[i];
+            v = v + partialResult[i];
+        }
+
+        v = v / (double)np;
+    }
 }
 
 void FieldPoints(double Diff)
