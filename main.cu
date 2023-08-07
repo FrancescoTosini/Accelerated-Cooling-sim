@@ -881,9 +881,6 @@ void gpuFieldInit()
 
         // TheorSlope is computed on the basis of a coarser grid, so look for the best values near xc, yc coordinates
         sv = gpuNearestValue(xc, yc, TSlopeLength, TheorSlope);
-
-        if (sv != sv) printf("- NAN\n");
-
         ev = MeasuredValues[index2D(rv, 2, NumInputValues)];
 
         DiffValues[rv] = ev - sv;
@@ -894,7 +891,6 @@ void gpuFieldInit()
     // Compute standard deviation
     sd = 0.0;
     for (rv = 0; rv < NumInputValues; rv++) sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
-    printf("----> sd == %lf\n", sd);
     sd = sqrt(sd / (double)NumInputValues);
 
     // Print statistics
@@ -1316,7 +1312,7 @@ int LinEquSolve(double* a, int n, double* b)
 int gpuLinEquSolve(double* a, int n, double* b)
 {
     /* Gauss-Jordan elimination algorithm */
-    int *indcol, *indrow, *ipiv;
+    int* indcol, * indrow, * ipiv;
 
     cudaError_t err;
 
@@ -1364,7 +1360,7 @@ int gpuLinEquSolve(double* a, int n, double* b)
         return(-1);
     }
 
-    gpuLinEquSolveKernel<<<16, 256>>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
+    gpuLinEquSolveKernel<<<32, 256>>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
@@ -1390,51 +1386,38 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
     for (iter = 0; iter < n; iter++)
     {
-        for (j = id; j < n; j += gridSize)
+        for (i = id; i < n; i += gridSize)
         {
             max = 0;
+            icol = 0;
 
-            if (ipiv[j] != 1)
+            if (ipiv[i] != 1)
             {
-                for (k = 0; k < n; k++)
+                for (j = 0; j < n; j++)
                 {
-                    if (ipiv[k] == 0 && max <= fabs(a[index2D(j, k, n)]))
+                    if (ipiv[j] == 0 && max <= fabs(a[index2D(i, j, n)]))
                     {
-                        max = fabs(a[index2D(j, k, n)]);
-                        icol = k;
+                        max = fabs(a[index2D(i, j, n)]);
+                        icol = j;
                     }
                 }
             }
 
-            maxima[j] = max;
-            maxIndex[j] = icol;
-        }
-
-        __syncthreads();
-
-        for (j = id; j < n; j += gridSize)
-        {
-            if (j % 2 == 0 && (j + 1) < n)
-            {
-                if (maxima[j] < maxima[j + 1])
-                {
-                    maxima[j] = maxima[j + 1];
-                    maxIndex[j] = maxIndex[j + 1];
-                }
-            }
+            maxima[i] = max;
+            maxIndex[i] = icol;
         }
 
         __syncthreads();
 
         if (id == 0)
         {
-            icol = 0;
+            j = 0;
 
-            for (j = 2; j < n; j += 2)
-                if (maxima[j] > maxima[icol]) icol = j;
+            for (i = 1; i < n; i++)
+                if (maxima[i] > maxima[j]) j = i;
 
-            maxRow = icol;
-            maxCol = maxIndex[icol];
+            maxRow = j;
+            maxCol = maxIndex[j];
 
             ipiv[maxCol] = ipiv[maxCol] + 1;
         }
@@ -1460,8 +1443,8 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         if (id == 0)
         {
-            indrow[i] = maxRow;
-            indcol[i] = maxCol;
+            indrow[iter] = maxRow;
+            indcol[iter] = maxCol;
         }
 
         __syncthreads();
@@ -1471,15 +1454,14 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
         if (id == 0)
         {
             temp = a[index2D(maxCol, maxCol, n)];
-
-            a[index2D(maxCol, maxCol, n)] = 1.0; 
+            a[index2D(maxCol, maxCol, n)] = 1.0;
             b[maxCol] /= temp;
         }
 
-        __syncthreads();
-
         for (i = id; i < n; i += gridSize)
+        {
             a[index2D(maxCol, i, n)] /= temp;
+        }
 
         __syncthreads();
 
@@ -1490,7 +1472,9 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
                 tmp = a[index2D(i, maxCol, n)];
                 a[index2D(i, maxCol, n)] = 0.0;
                 for (k = 0; k < n; k++)
+                {
                     a[index2D(i, k, n)] = a[index2D(i, k, n)] - a[index2D(maxCol, k, n)] * tmp;
+                }
                 b[i] = b[i] - b[maxCol] * tmp;
             }
         }
