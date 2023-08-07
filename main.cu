@@ -39,6 +39,8 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
 __device__ int maxRow, maxCol;
 __device__ double temp;
 __device__ double globalV;
+__device__ double rMax;
+__device__ double rMin;
 
 /* CODE */
 
@@ -78,6 +80,12 @@ __device__ double globalV;
     void gpuFieldInit();
     double gpuNearestValue(double xc, double yc, int ld, double* Values);
     __global__ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, int* mask, double* partialResult, int n);
+
+    void MinMaxIntVal(int* Values, int len);
+    __global__ void MinMaxIntValKernel(int* Values, int len, int* tmpMin, int* tmpMax);
+    void gpuFieldPoints(double Diff);
+    __global__ void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeigth, double* FieldValues, double Diff, int TSlopeLength, double* TheorSlope);
+    __device__ double deviceNearestValue(double xc, double yc, int ld, double* Values);
 
 int main(int argc, char* argv[])
 {
@@ -863,8 +871,6 @@ void gpuFieldInit()
     }
     memset(DiffValues, 0, sizeof(double) * NumInputValues);
 
-    ///////////////////////////////////////////
-
     /* Compute discrepancy between Measured and Theoretical value */
 
     DiscrValue = 0.0;
@@ -875,6 +881,9 @@ void gpuFieldInit()
 
         // TheorSlope is computed on the basis of a coarser grid, so look for the best values near xc, yc coordinates
         sv = gpuNearestValue(xc, yc, TSlopeLength, TheorSlope);
+
+        if (sv != sv) printf("- NAN\n");
+
         ev = MeasuredValues[index2D(rv, 2, NumInputValues)];
 
         DiffValues[rv] = ev - sv;
@@ -885,13 +894,15 @@ void gpuFieldInit()
     // Compute standard deviation
     sd = 0.0;
     for (rv = 0; rv < NumInputValues; rv++) sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
+    printf("----> sd == %lf\n", sd);
     sd = sqrt(sd / (double)NumInputValues);
 
     // Print statistics
     fprintf(stdout, "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, %12.3e\n", NumInputValues, DiscrValue, sd);
 
     // Compute FieldValues stage 1
-    //FieldPoints(DiscrValue);
+    
+    gpuFieldPoints(DiscrValue);
 
     free(DiffValues);
 }
@@ -1564,7 +1575,7 @@ double gpuNearestValue(double xc, double yc, int ld, double* Values)
         exit(-1);
     }
 
-    gpuNearestValueKernel << <1, 768 >> > (xc, yc, Values, dist, mask, partialResult, ld);
+    gpuNearestValueKernel<<<1, 768 >>>(xc, yc, Values, dist, mask, partialResult, ld);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
@@ -1671,6 +1682,194 @@ void FieldPoints(double Diff)
     }
 
     return;
+}
+
+void gpuFieldPoints(double Diff)
+{
+    cudaError_t err;
+
+    MinMaxIntVal(FieldWeight, Xdots * Ydots);
+
+    gpuFieldPointsKernel<<<dim3(16, 16, 1), dim3(32, 32, 1)>>>(FieldCoord, FieldWeight, FieldValues, Diff, TSlopeLength, TheorSlope);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+    }
+
+    cudaMemcpy(&FieldValues[Xdots * Ydots], FieldValues, sizeof(double) * Xdots * Ydots, cudaMemcpyDeviceToDevice);
+
+    return;
+}
+
+void MinMaxIntVal(int* Values, int len)
+{
+    int* tmpMax;
+    int* tmpMin;
+
+    cudaError_t err;
+
+    /* Allocate Temporary Results */
+    err = cudaMalloc(&tmpMax, sizeof(int) * (len + 1));
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    err = cudaMalloc(&tmpMin, sizeof(int) * (len + 1));
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    MinMaxIntValKernel<<<1, 768>>>(Values, len, tmpMin, tmpMax);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    cudaFree(tmpMax);
+    cudaFree(tmpMin);
+}
+
+__global__
+void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
+{
+    int i;
+    double a, b;
+    int layerLength = (len + 1) / 2;
+
+    for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+    {
+        if ((2 * i + 1) < len)
+        {
+            a = Values[2 * i];
+            b = Values[2 * i + 1];
+
+            tmpMin[i] = (a < b) ? a : b;
+            tmpMax[i] = (a > b) ? a : b;
+        }
+        else 
+        {
+            tmpMin[i] = Values[2 * i];
+            tmpMax[i] = Values[2 * i];
+        }
+    }
+
+    layerLength = (layerLength + 1) / 2;
+
+    __syncthreads();
+
+    while (layerLength > 1)
+    {
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+        {
+            if ((2 * i + 1) < len)
+            {
+                a = tmpMin[2 * i];
+                b = tmpMin[2 * i + 1];
+                tmpMin[2 * i] = (a < b) ? a : b;
+
+                a = tmpMax[2 * i];
+                b = tmpMax[2 * i + 1];
+                tmpMax[2 * i] = (a > b) ? a : b;
+            }
+        }
+
+        __syncthreads();
+
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+        {
+            tmpMin[i] = tmpMin[2 * i];
+            tmpMax[i] = tmpMax[2 * i];
+        }
+
+        layerLength = (layerLength + 1) / 2;
+
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
+        rMin = tmpMin[0];
+        rMax = tmpMax[0];
+    }
+}
+
+__global__
+void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeight, double* FieldValues, double Diff, int TSlopeLength, double* TheorSlope)
+{
+    int iy, ix;
+    double xc, yc, sv;
+
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int idy = threadIdx.y + blockIdx.y * blockDim.y;
+    int sizeX = blockDim.x * gridDim.x;
+    int sizeY = blockDim.y * gridDim.y;
+
+    for (iy = idy; iy < Ydots; iy += sizeY)
+    {
+        for (ix = idx; ix < Xdots; ix += sizeX)
+        {
+            xc = FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)];
+            yc = FieldCoord[index3D(ix, iy, 1, Xdots, Ydots)];
+
+            // Compute effects of field in every point
+            sv = deviceNearestValue(xc, yc, TSlopeLength, TheorSlope);
+            FieldValues[index3D(ix, iy, 0, Xdots, Ydots)] = 293.16 + 80 * (Diff + sv) * (FieldWeight[index2D(ix, iy, Xdots)] - rMin) / (rMax - rMin);
+        }
+    }
+}
+
+__device__
+double deviceNearestValue(double xc, double yc, int ld, double* Values)
+{
+    // look for the best values near xc, yc coordinates
+    double v;
+
+    double d, md; // minimum distance
+    int np;       // number of nearest points
+    int i;
+
+    md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) +
+         ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
+
+    // Compute lowest distance
+    for (i = 0; i < ld; i++)
+    {
+        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
+            ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
+        if (md > d) md = d;
+    }
+
+    np = 0;
+    v = 0.0;
+
+    // Compute nearest value
+    for (i = 0; i < ld; i++)
+    {
+        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
+            ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
+        if (md == d)
+        {
+            // add contributed value
+            np = np + 1;
+            v = v + Values[index2D(i, 2, ld)];
+        }
+    }
+
+    // mean value
+    v = v / (double)np;
+
+    return v;
 }
 
 void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name)
