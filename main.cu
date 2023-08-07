@@ -1769,6 +1769,7 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
     int i;
     double a, b;
     int layerLength = (len + 1) / 2;
+    int last;
 
     for (i = threadIdx.x; i < layerLength; i += blockDim.x)
     {
@@ -1787,6 +1788,7 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
         }
     }
 
+    last = layerLength % 2;
     layerLength = (layerLength + 1) / 2;
 
     __syncthreads();
@@ -1795,7 +1797,7 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
     {
         for (i = threadIdx.x; i < layerLength; i += blockDim.x)
         {
-            if ((2 * i + 1) < layerLength)
+            if (i < layerLength - last)
             {
                 a = tmpMin[2 * i];
                 b = tmpMin[2 * i + 1];
@@ -1815,6 +1817,7 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
             tmpMax[i] = tmpMax[2 * i];
         }
 
+        last = layerLength % 2;
         layerLength = (layerLength + 1) / 2;
 
         __syncthreads();
