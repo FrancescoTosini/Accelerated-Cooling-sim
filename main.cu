@@ -41,6 +41,8 @@ __device__ double temp;
 __device__ double globalV;
 __device__ double rMax;
 __device__ double rMin;
+__device__ double rMean;
+__device__ double rStd;
 
 /* CODE */
 
@@ -87,6 +89,9 @@ __device__ double rMin;
     __global__ void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeigth, double* FieldValues, double Diff, int TSlopeLength, double* TheorSlope);
     __device__ double deviceNearestValue(double xc, double yc, int ld, double* Values);
 
+    void gpuStatistics(int s1, int s2, double* rdata, int step);
+    __global__ void gpuStatisticsKernel(double* tmpMin, double* tmpMax, double* tmpMean, double* tmpStd, double* Values, int len, int reduceLayer)
+
 int main(int argc, char* argv[])
 {
     clock_t t0, t1, p0, p1;
@@ -118,13 +123,11 @@ int main(int argc, char* argv[])
     p1 = clock();
     fprintf(stdout, ">> FieldInit ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
-    /*
     // FieldValues(Xdots,Ydots,2)
     p0 = clock();
     Cooling(TimeSteps);
     p1 = clock();
     fprintf(stdout, ">> Cooling ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
-    */
 
     t1 = clock();
     fprintf(stdout, ">> Computations ended in %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
@@ -135,7 +138,7 @@ int main(int argc, char* argv[])
     cudaFree(FieldWeight);
     cudaFree(FieldCoord);
     cudaFree(TheorSlope);
-    //free(FieldValues);
+    cudaFree(FieldValues);
 
     return 0;
 
@@ -934,6 +937,42 @@ void Cooling(int steps)
         sprintf(fname, "FieldValues%4.4d", it);
         //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
         Statistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
+    }
+
+    return;
+}
+
+void gpuCooling(int steps)
+{
+    /*
+    !  Compute evolution of the effects of the field
+    !  Input/Output:
+    !                FieldValues(Xdots,Ydots,2)
+    */
+
+    int iz, it;
+    char fname[80];
+    double vmin, vmax;
+
+    fprintf(stdout, "\t>> Computing cooling of field effects ...\n");
+    fprintf(stdout, "\t... %d steps ...\n", steps);
+    sprintf(fname, "FieldValues0000");
+
+    vmin = vmax = 0.0;
+    //RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
+    gpuStatistics(Xdots, Ydots, FieldValues, 0);
+
+    iz = 1;
+    for (it = 1; it <= steps; it++)
+    {
+        // Update the value of grid points
+        Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
+        iz = 3 - iz;
+
+        // Print and show results 
+        sprintf(fname, "FieldValues%4.4d", it);
+        //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
+        gpuStatistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
     }
 
     return;
@@ -1756,7 +1795,7 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
     {
         for (i = threadIdx.x; i < layerLength; i += blockDim.x)
         {
-            if ((2 * i + 1) < len)
+            if ((2 * i + 1) < layerLength)
             {
                 a = tmpMin[2 * i];
                 b = tmpMin[2 * i + 1];
@@ -1978,6 +2017,179 @@ void Statistics(int s1, int s2, double* rdata, int step)
     fprintf(stdout, ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n", step, mnv, mv, mxv, sd);
 
     return;
+}
+
+void gpuStatistics(int s1, int s2, double* rdata, int step)
+{
+    double mnv, mv, mxv, sd;
+
+    double* tmpMin;
+    double* tmpMax;
+    double* tmpMean;
+    double* tmpStd;
+
+    cudaError_t err;
+
+    int reduceLayer = (s1 * s2 + 1) / 2;
+
+    /* Allocate temporary results */
+    err = cudaMalloc(&tmpMin, sizeof(double) * reduceLayer * 4);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    tmpMax = &tmpMin[reduceLayer];
+    tmpMean = &tmpMax[reduceLayer];
+    tmpStd = &tmpMean[reduceLayer];
+
+    gpuStatisticsKernel(tmpMin, tmpMax, tmpMean, tmpStd, rdata, s1 * s2, reduceLayer);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    cudaMemcpyFromSymbol(&mnv, rMin, sizeof(double), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&mv, rMean, sizeof(double), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&mxv, rMax, sizeof(double), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&sd, rStd, sizeof(double), 0, cudaMemcpyDeviceToHost);
+
+    fprintf(stdout, ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n", step, mnv, mv, mxv, sd);
+
+    return;
+}
+
+__global__
+void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer)
+{
+    int i;
+    double a, b;
+    int layerLength = reduceLayer;
+
+    for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+    {
+        if ((2 * i + 1) < len)
+        {
+            a = Values[2 * i];
+            b = Values[2 * i + 1];
+
+            tmpMin[i] = (a < b) ? a : b;
+            tmpMax[i] = (a > b) ? a : b;
+            tmpMean[i] = a + b;
+        }
+        else
+        {
+            tmpMin[i] = Values[2 * i];
+            tmpMax[i] = Values[2 * i];
+            tmpMean[i] = Values[2 * i];
+        }
+    }
+
+    layerLength = (layerLength + 1) / 2;
+
+    __syncthreads();
+
+    while (layerLength > 1)
+    {
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+        {
+            if ((2 * i + 1) < layerLength)
+            {
+                a = tmpMin[2 * i];
+                b = tmpMin[2 * i + 1];
+                tmpMin[2 * i] = (a < b) ? a : b;
+
+                a = tmpMax[2 * i];
+                b = tmpMax[2 * i + 1];
+                tmpMax[2 * i] = (a > b) ? a : b;
+
+                a = tmpMean[2 * i];
+                b = tmpMean[2 * i + 1];
+                tmpMean[2 * i] = a + b;
+            }
+        }
+
+        __syncthreads();
+
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+        {
+            tmpMin[i] = tmpMin[2 * i];
+            tmpMax[i] = tmpMax[2 * i];
+            tmpMean[i] = tmpMean[2 * i];
+        }
+
+        layerLength = (layerLength + 1) / 2;
+
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
+        rMin = tmpMin[0];
+        rMax = tmpMax[0];
+        rMean = tmpMean[0]/(double) len;
+    }
+
+    __syncthreads();
+
+    // Compute STD
+
+    double mv = rMean;
+
+    layerLength = reduceLayer;
+
+    for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+    {
+        if ((2 * i + 1) < len)
+        {
+            a = Values[2 * i];
+            b = Values[2 * i + 1];
+
+            a = (a - mv) * (a - mv);
+            b = (b - mv) * (b - mv);
+
+            tmpStd[i] = a + b;
+        }
+        else
+        {
+            a = Values[2 * i];
+            a = (a - mv) * (a - mv);
+
+            tmpStd[i] = a;
+        }
+    }
+
+    layerLength = (layerLength + 1) / 2;
+
+    __syncthreads();
+
+    while (layerLength > 1)
+    {
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
+        {
+            if ((2 * i + 1) < layerLength)
+            {
+                a = tmpStd[2 * i];
+                b = tmpStd[2 * i + 1];
+                tmpStd[2 * i] = a + b;
+            }
+        }
+
+        __syncthreads();
+
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x) tmpStd[i] = tmpStd[2 * i];
+
+        layerLength = (layerLength + 1) / 2;
+
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) rMean = sqrt(tmpStd[0] / (double) len);
 }
 
 void Update(int xdots, int ydots, double* u1, double* u2)
