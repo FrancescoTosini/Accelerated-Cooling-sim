@@ -38,6 +38,7 @@ double* FieldValues;       // 3-D array - X, Y coordinates in field
 
 __device__ int maxRow, maxCol;
 __device__ double temp;
+__device__ double globalV;
 
 /* CODE */
 
@@ -74,6 +75,7 @@ __device__ double temp;
     void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
     __global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double* FieldCoord, int* FieldWeight);
 
+    void gpuFieldInit();
     double gpuNearestValue(double xc, double yc, int ld, double* Values);
     __global__ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, int* mask, double* partialResult, int n);
 
@@ -102,13 +104,13 @@ int main(int argc, char* argv[])
     p1 = clock();
     fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
-    /*
     // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
     p0 = clock();
-    FieldInit();
+    gpuFieldInit();
     p1 = clock();
     fprintf(stdout, ">> FieldInit ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
+    /*
     // FieldValues(Xdots,Ydots,2)
     p0 = clock();
     Cooling(TimeSteps);
@@ -121,11 +123,11 @@ int main(int argc, char* argv[])
     
     // End Program
 
-    cudaFree(MeasuredValues);
+    free(MeasuredValues);
     cudaFree(FieldWeight);
     cudaFree(FieldCoord);
     cudaFree(TheorSlope);
-    free(FieldValues);
+    //free(FieldValues);
 
     return 0;
 
@@ -347,7 +349,6 @@ void gpuInitGrid(char* InputFile)
     char filerow[80];
     FILE* inpunit;
 
-    double* tmpMeasuredValues;
     cudaError_t err;
 
     fprintf(stdout, "(NO CPU) >> Initializing grid ...\n");
@@ -378,8 +379,8 @@ void gpuInitGrid(char* InputFile)
             }
             else
             {
-                tmpMeasuredValues = (double*)malloc(sizeof(double) * NumInputValues * 3);
-                if (tmpMeasuredValues == NULL)
+                MeasuredValues = (double*)malloc(sizeof(double) * NumInputValues * 3);
+                if (MeasuredValues == NULL)
                 {
                     fprintf(stderr, "(Error) >> Cannot allocate tmpMeasuredValues[%d,3] :(\n", NumInputValues);
                     exit(-1);
@@ -389,9 +390,9 @@ void gpuInitGrid(char* InputFile)
         else
         {
             if (sscanf(filerow, "%lf %lf %lf",
-                &tmpMeasuredValues[index2D(valrows, 0, NumInputValues)],  // X coord
-                &tmpMeasuredValues[index2D(valrows, 1, NumInputValues)],  // Y coord
-                &tmpMeasuredValues[index2D(valrows, 2, NumInputValues)])  // Measured value
+                &MeasuredValues[index2D(valrows, 0, NumInputValues)],  // X coord
+                &MeasuredValues[index2D(valrows, 1, NumInputValues)],  // Y coord
+                &MeasuredValues[index2D(valrows, 2, NumInputValues)])  // Measured value
                 < 3)
             {
                 fprintf(stderr, "(Error) >>> something went wrong while reading MeasuredValues(%d,*)", valrows);
@@ -401,16 +402,6 @@ void gpuInitGrid(char* InputFile)
             if (valrows >= NumInputValues) break;
         }
     }
-
-    err = cudaMalloc(&MeasuredValues, sizeof(double) * NumInputValues * 3);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "(Error) >> Cannot allocate FieldWeight[%d,%d] on GPU\n", Xdots, Ydots);
-        exit(-1);
-    }
-
-    cudaMemcpy(MeasuredValues, tmpMeasuredValues, sizeof(double) * NumInputValues * 3, cudaMemcpyHostToDevice);
-    free(tmpMeasuredValues);
 
     /* Create and initialize FieldWeight */
     err = cudaMalloc(&FieldWeight, sizeof(int) * Xdots * Ydots);
@@ -864,17 +855,18 @@ void gpuFieldInit()
     cudaMemset(FieldValues, 0, sizeof(double) * Xdots * Ydots * 2);
 
     /* Allocate DiffValues */
-    err = cudaMalloc(&DiffValues, sizeof(double) * NumInputValues);
-    if (err != cudaSuccess)
+    DiffValues = (double*)malloc(sizeof(double) * NumInputValues);
+    if (DiffValues == NULL)
     {
-        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d] in GPU\n", NumInputValues);
+        fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d]\n", NumInputValues);
         exit(-1);
     }
-    cudaMemset(DiffValues, 0, sizeof(double) * NumInputValues);
+    memset(DiffValues, 0, sizeof(double) * NumInputValues);
 
     ///////////////////////////////////////////
 
     /* Compute discrepancy between Measured and Theoretical value */
+
     DiscrValue = 0.0;
     for (rv = 0; rv < NumInputValues; rv++)
     {
@@ -882,7 +874,7 @@ void gpuFieldInit()
         yc = MeasuredValues[index2D(rv, 1, NumInputValues)];
 
         // TheorSlope is computed on the basis of a coarser grid, so look for the best values near xc, yc coordinates
-        sv = NearestValue(xc, yc, TSlopeLength, TheorSlope);
+        sv = gpuNearestValue(xc, yc, TSlopeLength, TheorSlope);
         ev = MeasuredValues[index2D(rv, 2, NumInputValues)];
 
         DiffValues[rv] = ev - sv;
@@ -899,11 +891,9 @@ void gpuFieldInit()
     fprintf(stdout, "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, %12.3e\n", NumInputValues, DiscrValue, sd);
 
     // Compute FieldValues stage 1
-    FieldPoints(DiscrValue);
+    //FieldPoints(DiscrValue);
 
-    cudaFree(DiffValues);
-
-    return;
+    free(DiffValues);
 }
 
 void Cooling(int steps)
@@ -1469,18 +1459,16 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         if (id == 0)
         {
-            temp = (double)1.0 / a[index2D(maxCol, maxCol, n)];
+            temp = a[index2D(maxCol, maxCol, n)];
 
-            //TODO: check if it is an error
-            //a[index2D(maxCol, maxCol, n)] = 1.0; 
-
-            b[maxCol] = b[maxCol] * temp;
+            a[index2D(maxCol, maxCol, n)] = 1.0; 
+            b[maxCol] /= temp;
         }
 
         __syncthreads();
 
         for (i = id; i < n; i += gridSize)
-            a[index2D(maxCol, i, n)] = a[index2D(maxCol, i, n)] * temp;
+            a[index2D(maxCol, i, n)] /= temp;
 
         __syncthreads();
 
@@ -1497,21 +1485,6 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
         }
 
         __syncthreads();
-    }
-
-    // Last step
-
-    for (j = id; j < n; j += gridSize)
-    {
-        if (indrow[j] != indcol[j])
-        {
-            for (k = 0; k < n; k++)
-            {
-                tmp = a[index2D(k, indrow[j], n)];
-                a[index2D(k, indrow[j], n)] = a[index2D(k, indcol[j], n)];
-                a[index2D(k, indcol[j], n)] = tmp;
-            }
-        }
     }
 }
 
@@ -1559,6 +1532,8 @@ double NearestValue(double xc, double yc, int ld, double* Values)
 
 double gpuNearestValue(double xc, double yc, int ld, double* Values)
 {
+    double v;
+
     double* dist;
     int* mask;
     double* partialResult;
@@ -1589,22 +1564,32 @@ double gpuNearestValue(double xc, double yc, int ld, double* Values)
         exit(-1);
     }
 
-    gpuNearestValueKernel(xc, yc, Values, dist, mask, partialResult, ld);
+    gpuNearestValueKernel << <1, 768 >> > (xc, yc, Values, dist, mask, partialResult, ld);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+        exit(-1);
+    }
+
+    cudaMemcpyFromSymbol(&v, globalV, sizeof(double), 0, cudaMemcpyDeviceToHost);
 
     cudaFree(dist);
     cudaFree(mask);
     cudaFree(partialResult);
 
-    return 0;
+    return v;
 }
 
 __global__
-void gpuNearestValueKernel(double xc, double yc, double* Values, double *dist, int *mask, double *partialResult, int n)
+void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, int* mask, double* partialResult, int n)
 {
     int i;
-    double a, b;
+    double a, b, v;
     __shared__ int np;
-    __shared__ double md, v;
+    __shared__ double md;
 
     // Compute distances
 
@@ -1643,13 +1628,13 @@ void gpuNearestValueKernel(double xc, double yc, double* Values, double *dist, i
         np = 0;
         v = 0.0;
 
-        for (i = 1; i < n; i++)
+        for (i = 0; i < n; i++)
         {
             np = np + mask[i];
             v = v + partialResult[i];
         }
 
-        v = v / (double)np;
+        globalV = v / (double)np;
     }
 }
 
