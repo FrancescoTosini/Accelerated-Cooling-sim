@@ -90,7 +90,7 @@ __device__ double rStd;
     __device__ double deviceNearestValue(double xc, double yc, int ld, double* Values);
 
     void gpuStatistics(int s1, int s2, double* rdata, int step);
-    __global__ void gpuStatisticsKernel(double* tmpMin, double* tmpMax, double* tmpMean, double* tmpStd, double* Values, int len, int reduceLayer)
+    __global__ void gpuStatisticsKernel(double* tmpMin, double* tmpMax, double* tmpMean, double* tmpStd, double* Values, int len, int reduceLayer);
 
 int main(int argc, char* argv[])
 {
@@ -2044,7 +2044,7 @@ void gpuStatistics(int s1, int s2, double* rdata, int step)
     tmpMean = &tmpMax[reduceLayer];
     tmpStd = &tmpMean[reduceLayer];
 
-    gpuStatisticsKernel(tmpMin, tmpMax, tmpMean, tmpStd, rdata, s1 * s2, reduceLayer);
+    gpuStatisticsKernel<<<1, 768>>>(tmpMin, tmpMax, tmpMean, tmpStd, rdata, s1 * s2, reduceLayer);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
@@ -2071,6 +2071,8 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
     double a, b;
     int layerLength = reduceLayer;
 
+    int last;
+
     for (i = threadIdx.x; i < layerLength; i += blockDim.x)
     {
         if ((2 * i + 1) < len)
@@ -2090,6 +2092,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
         }
     }
 
+    last = layerLength % 2;
     layerLength = (layerLength + 1) / 2;
 
     __syncthreads();
@@ -2098,7 +2101,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
     {
         for (i = threadIdx.x; i < layerLength; i += blockDim.x)
         {
-            if ((2 * i + 1) < layerLength)
+            if (i < layerLength - last)
             {
                 a = tmpMin[2 * i];
                 b = tmpMin[2 * i + 1];
@@ -2123,16 +2126,25 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
             tmpMean[i] = tmpMean[2 * i];
         }
 
+        last = layerLength % 2;
         layerLength = (layerLength + 1) / 2;
 
         __syncthreads();
     }
 
     if (threadIdx.x == 0)
-    {
-        rMin = tmpMin[0];
-        rMax = tmpMax[0];
-        rMean = tmpMean[0]/(double) len;
+    {   
+        a = tmpMin[0];
+        b = tmpMin[1];
+        rMin = (a < b) ? a : b;
+
+        a = tmpMax[0];
+        b = tmpMax[1];
+        rMax = (a > b) ? a : b;
+
+        a = tmpMean[0];
+        b = tmpMean[1];
+        rMean = (a + b) / (double)len;
     }
 
     __syncthreads();
@@ -2164,6 +2176,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
         }
     }
 
+    last = layerLength % 2;
     layerLength = (layerLength + 1) / 2;
 
     __syncthreads();
@@ -2172,7 +2185,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
     {
         for (i = threadIdx.x; i < layerLength; i += blockDim.x)
         {
-            if ((2 * i + 1) < layerLength)
+            if (i < layerLength - last)
             {
                 a = tmpStd[2 * i];
                 b = tmpStd[2 * i + 1];
@@ -2184,12 +2197,16 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
         for (i = threadIdx.x; i < layerLength; i += blockDim.x) tmpStd[i] = tmpStd[2 * i];
 
+        last = layerLength % 2;
         layerLength = (layerLength + 1) / 2;
 
         __syncthreads();
     }
 
-    if (threadIdx.x == 0) rMean = sqrt(tmpStd[0] / (double) len);
+    if (threadIdx.x == 0)
+    {
+        rStd = sqrt((tmpStd[0] + tmpStd[1]) / (double)len);
+    }
 }
 
 void Update(int xdots, int ydots, double* u1, double* u2)
