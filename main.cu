@@ -90,7 +90,7 @@ __device__ double rStd;
     __device__ double deviceNearestValue(double xc, double yc, int ld, double* Values);
 
     void gpuCooling(int steps);
-    void gpuStatistics(int s1, int s2, double* rdata, int step);
+    void gpuStatistics(int s1, int s2, double* rdata, double* tmp, int step);
     __global__ void gpuStatisticsKernel(double* tmpMin, double* tmpMax, double* tmpMean, double* tmpStd, double* Values, int len, int reduceLayer);
     void gpuUpdate(int xdots, int ydots, double* u1, double* u2);
     __global__ void gpuUpdateKernel(int xdots, int ydots, double* u1, double* u2, double CX, double CY, double dgx, double dgy);
@@ -957,13 +957,28 @@ void gpuCooling(int steps)
     char fname[80];
     double vmin, vmax;
 
+    double* tmp;
+    int reduceLayer = (Xdots * Ydots + 1) / 2;
+
+    cudaError_t err;
+
+    /* Allocate space for temporary results */
+    err = cudaMalloc(&tmp, sizeof(double) * reduceLayer * 4);
+    if (err != cudaSuccess)
+    {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    // -------------- 
+
     fprintf(stdout, "\t>> Computing cooling of field effects ...\n");
     fprintf(stdout, "\t... %d steps ...\n", steps);
     sprintf(fname, "FieldValues0000");
 
     vmin = vmax = 0.0;
     //RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
-    gpuStatistics(Xdots, Ydots, FieldValues, 0);
+    gpuStatistics(Xdots, Ydots, FieldValues, tmp, 0);
 
     iz = 1;
     for (it = 1; it <= steps; it++)
@@ -977,8 +992,10 @@ void gpuCooling(int steps)
         // Print and show results 
         sprintf(fname, "FieldValues%4.4d", it);
         //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
-        //gpuStatistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
+        gpuStatistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], tmp, it);
     }
+
+    cudaFree(tmp);
 
     return;
 }
@@ -2027,7 +2044,7 @@ void Statistics(int s1, int s2, double* rdata, int step)
     return;
 }
 
-void gpuStatistics(int s1, int s2, double* rdata, int step)
+void gpuStatistics(int s1, int s2, double* rdata, double *tmp, int step)
 {
     double mnv, mv, mxv, sd;
 
@@ -2040,14 +2057,7 @@ void gpuStatistics(int s1, int s2, double* rdata, int step)
 
     int reduceLayer = (s1 * s2 + 1) / 2;
 
-    /* Allocate temporary results */
-    err = cudaMalloc(&tmpMin, sizeof(double) * reduceLayer * 4);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
-        return;
-    }
-
+    tmpMin = tmp;
     tmpMax = &tmpMin[reduceLayer];
     tmpMean = &tmpMax[reduceLayer];
     tmpStd = &tmpMean[reduceLayer];
