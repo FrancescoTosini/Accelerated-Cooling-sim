@@ -89,8 +89,11 @@ __device__ double rStd;
     __global__ void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeigth, double* FieldValues, double Diff, int TSlopeLength, double* TheorSlope);
     __device__ double deviceNearestValue(double xc, double yc, int ld, double* Values);
 
+    void gpuCooling(int steps);
     void gpuStatistics(int s1, int s2, double* rdata, int step);
     __global__ void gpuStatisticsKernel(double* tmpMin, double* tmpMax, double* tmpMean, double* tmpStd, double* Values, int len, int reduceLayer);
+    void gpuUpdate(int xdots, int ydots, double* u1, double* u2);
+    __global__ void gpuUpdateKernel(int xdots, int ydots, double* u1, double* u2, double CX, double CY, double dgx, double dgy);
 
 int main(int argc, char* argv[])
 {
@@ -125,7 +128,7 @@ int main(int argc, char* argv[])
 
     // FieldValues(Xdots,Ydots,2)
     p0 = clock();
-    Cooling(TimeSteps);
+    gpuCooling(TimeSteps);
     p1 = clock();
     fprintf(stdout, ">> Cooling ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
@@ -966,13 +969,15 @@ void gpuCooling(int steps)
     for (it = 1; it <= steps; it++)
     {
         // Update the value of grid points
-        Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
+        gpuUpdate(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
+        cudaDeviceSynchronize();
+
         iz = 3 - iz;
 
         // Print and show results 
         sprintf(fname, "FieldValues%4.4d", it);
         //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
-        gpuStatistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
+        //gpuStatistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
     }
 
     return;
@@ -2264,4 +2269,75 @@ void Update(int xdots, int ydots, double* u1, double* u2)
     }
 
     return;
+}
+
+void gpuUpdate(int xdots, int ydots, double* u1, double* u2)
+{
+    /* Compute next step using matrices g1, g2 of dimension (nr,nc) */
+
+    int i, j;
+    double CX, CY;
+    double hx, dgx, hy, dgy, dd;
+
+    dd = 0.0000001;
+    hx = 1.0 / (double)xdots;
+    hy = 1.0 / (double)ydots;
+    dgx = -2.0 + hx * hx / (2 * dd);
+    dgy = -2.0 + hy * hy / (2 * dd);
+    CX = dd / (hx * hx);
+    CY = dd / (hy * hy);
+
+    gpuUpdateKernel<<<dim3(16, 16, 1), 128>>>(xdots, ydots, u1, u2, CX, CY, dgx, dgy);
+
+    return;
+}
+
+__global__
+void gpuUpdateKernel(int xdots, int ydots, double* u1, double* u2, double CX, double CY, double dgx, double dgy)
+{
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int idy = threadIdx.y + blockIdx.y * blockDim.y;
+    int sizeX = blockDim.x * gridDim.x;
+    int sizeY = blockDim.y * gridDim.y;
+
+    int i, j;
+
+    for (j = idy; j < ydots - 1; j += sizeY)
+    {
+        for (i = idx; i < xdots - 1; i += sizeX)
+        {
+            if (i <= 0 || i >= xdots - 1)
+            {
+                u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
+                continue;
+            }
+
+            if (j <= 0 || j >= ydots - 1)
+            {
+                u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
+                continue;
+            }
+
+            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)]
+                                     + u1[index2D((i + 1), j, xdots)] 
+                                     + dgx * u1[index2D((i + 1), j, xdots)])
+                                     + CY * (u1[index2D(i, (j - 1), xdots)]
+                                     + u1[index2D(i, (j + 1), xdots)] 
+                                     + dgy * u1[index2D(i, j, xdots)]);
+        }
+    }
+
+    __syncthreads();
+
+    for (j = idy; j < ydots - 1; j += sizeY)
+    {
+        u2[index2D(0, j, xdots)] = u2[index2D(1, j, xdots)];
+        u2[index2D(Xdots - 1, j, xdots)] = u2[index2D(Xdots - 2, j, xdots)];
+    }
+
+    for (i = idx; i < xdots - 1; i += sizeX)
+    {
+        u2[index2D(i, 0, xdots)] = u2[index2D(i, 1, xdots)];
+        u2[index2D(i, Ydots - 1, xdots)] = u2[index2D(i, Ydots - 2, xdots)];
+    }
 }
