@@ -1,38 +1,38 @@
-﻿#ifndef __CUDACC__ 
-    #define __CUDACC__
+﻿#ifndef __CUDACC__
+#define __CUDACC__
 #endif
 
 #include "cuda.h"
 #include "cuda_runtime.h"
-#include "device_launch_parameters.h"
 #include "device_functions.h"
+#include "device_launch_parameters.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <time.h>
 
 #include "util.cu"
 
-#define index2D(i,j,LD1) i + ((j)*LD1)    // element position in 2-D arrays
-#define index3D(i,j,k,LD1,LD2) i + ((j)*LD1) + ((k)*LD1*LD2)   // element position in 3-D arrays
+#define index2D(i, j, LD1) i + ((j)*LD1)                           // element position in 2-D arrays
+#define index3D(i, j, k, LD1, LD2) i + ((j)*LD1) + ((k)*LD1 * LD2) // element position in 3-D arrays
 
-#define Xdots 1400   // Plate grid resolution in 2 dimensions
-#define Ydots 1400   // May be changed to 1000x1000
+#define Xdots 1400 // Plate grid resolution in 2 dimensions
+#define Ydots 1400 // May be changed to 1000x1000
 
 // Parameters to compute point sensitiveness - values read from input file
 double Sreal, Simag, Rreal, Rimag;
 int MaxIters;
-int TimeSteps;   // Evolution time steps
+int TimeSteps; // Evolution time steps
 
-double* MeasuredValues;    // 2-D array - (NumInputValues,3) - Values read in input file
-int NumInputValues;        // Number of values read in input file
-double* TheorSlope;        // 2-D array - Theoretical value distribution
-int TSlopeLength;          // TheorSlope grid dimensions
-int* FieldWeight;          // 2-D array - (Xdots,Ydots) - Degree of sensitiveness to perturbing field 
-double* FieldCoord;        // 3-D array - X, Y coordinates in field
-double* FieldValues;       // 3-D array - X, Y coordinates in field
+double *MeasuredValues; // 2-D array - (NumInputValues,3) - Values read in input file
+int NumInputValues;     // Number of values read in input file
+double *TheorSlope;     // 2-D array - Theoretical value distribution
+int TSlopeLength;       // TheorSlope grid dimensions
+int *FieldWeight;       // 2-D array - (Xdots,Ydots) - Degree of sensitiveness to perturbing field
+double *FieldCoord;     // 3-D array - X, Y coordinates in field
+double *FieldValues;    // 3-D array - X, Y coordinates in field
 
 // Global GPU variables
 
@@ -48,55 +48,54 @@ __device__ double rStd;
 
 // Functions  prototypes
 
-    void InitGrid(char* InputFile);
-    int LinEquSolve(double* a, int n, double* b);
-    void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts);
-    double Solution(double x, double y);
-    void FieldDistribution();
-    void GridDef(double x0, double x1, double y0, double y1, int N, double* Pts);
-    void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
-    void FieldInit();
-    double NearestValue(double xc, double yc, int ld, double* Values);
-    void FieldPoints(double Diff);
-    void Cooling(int steps);
-    void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name);
-    void Statistics(int s1, int s2, double* rdata, int s);
-    void Update(int xdots, int ydots, double* u1, double* u2);
+void InitGrid(char *InputFile);
+int LinEquSolve(double *a, int n, double *b);
+void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts);
+double Solution(double x, double y);
+void FieldDistribution();
+void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts);
+void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
+void FieldInit();
+double NearestValue(double xc, double yc, int ld, double *Values);
+void FieldPoints(double Diff);
+void Cooling(int steps);
+void RealData2ppm(int s1, int s2, double *rdata, double *vmin, double *vmax, char *name);
+void Statistics(int s1, int s2, double *rdata, int s);
+void Update(int xdots, int ydots, double *u1, double *u2);
 
 // Accelerated functions
 
-    void gpuInitGrid(char* InputFile);
-    void gpuFieldDistribution();
-    void gpuGridDef(double x0, double x1, double y0, double y1, int N, double* Pts);
-    __global__ void gpuGridDefKernel(double x0, double y0, double dx, double dy, double* Pts, int Nm1, int len, int TSlopeLength);
-    void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts);
-    __global__ void gpuEqsDefKernel(double x0, double x1, double y0, double y1, int Nm1, double dx, double dy, int LA, double* A, double* Rhs, double* Pts, int TSlopeLength);
-    __device__ double gpuSolution(double x, double y);
+void gpuInitGrid(char *InputFile);
+void gpuFieldDistribution();
+void gpuGridDef(double x0, double x1, double y0, double y1, int N, double *Pts);
+__global__ void gpuGridDefKernel(double x0, double y0, double dx, double dy, double *Pts, int Nm1, int len, int TSlopeLength);
+void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts);
+__global__ void gpuEqsDefKernel(double x0, double x1, double y0, double y1, int Nm1, double dx, double dy, int LA, double *A, double *Rhs, double *Pts, int TSlopeLength);
+__device__ double gpuSolution(double x, double y);
 
-    int gpuLinEquSolve(double* a, int n, double* b);
-    __global__ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, int* indrow, int* indcol, int* ipiv, int n);
+int gpuLinEquSolve(double *a, int n, double *b);
+__global__ void gpuLinEquSolveKernel(double *maxima, int *maxIndex, double *a, double *b, int *indrow, int *indcol, int *ipiv, int n);
 
-    void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
-    __global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double* FieldCoord, int* FieldWeight);
+void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
+__global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double *FieldCoord, int *FieldWeight);
 
-    void gpuFieldInit();
-    double gpuNearestValue(double xc, double yc, int ld, double* Values);
-    __global__ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, int* mask, double* partialResult, int n);
+void gpuFieldInit();
+double gpuNearestValue(double xc, double yc, int ld, double *Values);
+__global__ void gpuNearestValueKernel(double xc, double yc, double *Values, double *dist, int *mask, double *partialResult, int n);
 
-    void MinMaxIntVal(int* Values, int len);
-    __global__ void MinMaxIntValKernel(int* Values, int len, int* tmpMin, int* tmpMax);
-    void gpuFieldPoints(double Diff);
-    __global__ void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeigth, double* FieldValues, double Diff, int TSlopeLength, double* TheorSlope);
-    __device__ double deviceNearestValue(double xc, double yc, int ld, double* Values);
+void MinMaxIntVal(int *Values, int len);
+__global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax);
+void gpuFieldPoints(double Diff);
+__global__ void gpuFieldPointsKernel(double *FieldCoord, int *FieldWeigth, double *FieldValues, double Diff, int TSlopeLength, double *TheorSlope);
+__device__ double deviceNearestValue(double xc, double yc, int ld, double *Values);
 
-    void gpuCooling(int steps);
-    void gpuStatistics(int s1, int s2, double* rdata, double* tmp, int step);
-    __global__ void gpuStatisticsKernel(double* tmpMin, double* tmpMax, double* tmpMean, double* tmpStd, double* Values, int len, int reduceLayer);
-    void gpuUpdate(int xdots, int ydots, double* u1, double* u2);
-    __global__ void gpuUpdateKernel(int xdots, int ydots, double* u1, double* u2, double CX, double CY, double dgx, double dgy);
+void gpuCooling(int steps);
+void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step);
+__global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer);
+void gpuUpdate(int xdots, int ydots, double *u1, double *u2);
+__global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, double CX, double CY, double dgx, double dgy);
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char *argv[]) {
     clock_t t0, t1, p0, p1;
 
     t0 = clock();
@@ -106,7 +105,7 @@ int main(int argc, char* argv[])
     p0 = clock();
     gpuInitGrid("Cooling.inp");
     p1 = clock();
-    fprintf(stdout, ">> InitGrid ended in %lf seconds\n", (double)(p1 - p0)/CLOCKS_PER_SEC);
+    fprintf(stdout, ">> InitGrid ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // TheorSlope(TSlopeLength,3)
     p0 = clock();
@@ -134,7 +133,7 @@ int main(int argc, char* argv[])
 
     t1 = clock();
     fprintf(stdout, ">> Computations ended in %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
-    
+
     // End Program
 
     free(MeasuredValues);
@@ -193,13 +192,12 @@ int main(int argc, char* argv[])
     free(TheorSlope);
     free(FieldValues);
 
-	return 0;*/
+    return 0;*/
 }
 
 /* FUNCTIONS */
 
-void InitGrid(char* InputFile)
-{
+void InitGrid(char *InputFile) {
     /* Output:
     !  MeasuredValues(:,3) - values read from input file
     !  Initialization of FieldWeight(Xdots,Ydots) and FieldCoord(Xdots,Ydots,2)
@@ -207,13 +205,12 @@ void InitGrid(char* InputFile)
 
     int valrows, st;
     char filerow[80];
-    FILE* inpunit;
+    FILE *inpunit;
 
     fprintf(stdout, ">> Initializing grid ...\n");
 
     inpunit = fopen(InputFile, "r");
-    if (!inpunit) 
-    {
+    if (!inpunit) {
         fprintf(stderr, "(Error) >>> Cannot access file %s\n", InputFile);
         exit(-1);
     }
@@ -221,59 +218,49 @@ void InitGrid(char* InputFile)
     // Read measured values
     NumInputValues = 0;
     valrows = 0;
-    while (1)
-    {
+    while (1) {
         st = readrow(filerow, 80, inpunit);
-        if (filerow[0] == '#') continue;
-        if (NumInputValues <= 0) 
-        {
-            if (sscanf(filerow, "  %d", &NumInputValues) < 1) 
-            {
-                if (NumInputValues <= 0) 
-                {
+        if (filerow[0] == '#')
+            continue;
+        if (NumInputValues <= 0) {
+            if (sscanf(filerow, "  %d", &NumInputValues) < 1) {
+                if (NumInputValues <= 0) {
                     fprintf(stderr, "(Error) >> there seems to be %d input values...\n", NumInputValues);
                     exit(-1);
                 }
-            }
-            else 
-            {
-                MeasuredValues = (double*)malloc(sizeof(double) * NumInputValues * 3);
-                if (MeasuredValues == NULL) 
-                {
+            } else {
+                MeasuredValues = (double *)malloc(sizeof(double) * NumInputValues * 3);
+                if (MeasuredValues == NULL) {
                     fprintf(stderr, "(Error) >> Cannot allocate MeasuredValues[%d,3] :(\n", NumInputValues);
                     exit(-1);
                 }
             }
-        }
-        else 
-        {
+        } else {
             if (sscanf(filerow, "%lf %lf %lf",
-                &MeasuredValues[index2D(valrows, 0, NumInputValues)],  // X coord
-                &MeasuredValues[index2D(valrows, 1, NumInputValues)],  // Y coord
-                &MeasuredValues[index2D(valrows, 2, NumInputValues)])  // Measured value
-                < 3) 
-            {
+                       &MeasuredValues[index2D(valrows, 0, NumInputValues)], // X coord
+                       &MeasuredValues[index2D(valrows, 1, NumInputValues)], // Y coord
+                       &MeasuredValues[index2D(valrows, 2, NumInputValues)]) // Measured value
+                < 3) {
                 fprintf(stderr, "(Error) >>> something went wrong while reading MeasuredValues(%d,*)", valrows);
                 exit(-1);
             }
             valrows++;
-            if (valrows >= NumInputValues) break;
+            if (valrows >= NumInputValues)
+                break;
         }
     }
 
     /* Create and initialize FieldWeight */
-    FieldWeight = (int*)malloc(sizeof(int) * Xdots * Ydots);
-    if (FieldWeight == NULL) 
-    {
+    FieldWeight = (int *)malloc(sizeof(int) * Xdots * Ydots);
+    if (FieldWeight == NULL) {
         fprintf(stderr, "(Error) >> Cannot allocate FieldWeight[%d,%d]\n", Xdots, Ydots);
         exit(-1);
     }
     SetIntValue(FieldWeight, Xdots * Ydots, 0); // OPP: you can use calloc?
 
     /* Create and initialize FieldCoord */
-    FieldCoord = (double*)malloc(sizeof(double) * Xdots * Ydots * 2);
-    if (FieldCoord == NULL) 
-    {
+    FieldCoord = (double *)malloc(sizeof(double) * Xdots * Ydots * 2);
+    if (FieldCoord == NULL) {
         fprintf(stderr, "(Error) >> Cannot allocate FieldCoord[%d,%d,2]\n", Xdots, Ydots);
         exit(-1);
     }
@@ -281,31 +268,26 @@ void InitGrid(char* InputFile)
 
     /* Now read Sreal, Simag, Rreal, Rimag */
     Sreal = Simag = Rreal = Rimag = 0.0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1) 
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Sreal from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#') continue;
-        if (sscanf(filerow, "%lf", &Sreal) < 1) 
-        {
+        if (filerow[0] == '#')
+            continue;
+        if (sscanf(filerow, "%lf", &Sreal) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Sreal from string.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Simag) < 1) 
-        {
+        if (fscanf(inpunit, "%lf", &Simag) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Simag from input file.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Rreal) < 1) 
-        {
+        if (fscanf(inpunit, "%lf", &Rreal) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Rreal from input file.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Rimag) < 1) 
-        {
+        if (fscanf(inpunit, "%lf", &Rimag) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Rimag from input file.\n");
             exit(-1);
         }
@@ -314,16 +296,14 @@ void InitGrid(char* InputFile)
 
     /* Now read MaxIters */
     MaxIters = 0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1) 
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#' || rowlen(filerow) < 1) continue;
-        if (sscanf(filerow, "%d", &MaxIters) < 1) 
-        {
+        if (filerow[0] == '#' || rowlen(filerow) < 1)
+            continue;
+        if (sscanf(filerow, "%d", &MaxIters) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from string.\n");
             exit(-1);
         }
@@ -332,16 +312,14 @@ void InitGrid(char* InputFile)
 
     /* Now read TimeSteps */
     TimeSteps = 0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1) 
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#' || rowlen(filerow) < 1) continue;
-        if (sscanf(filerow, "%d", &TimeSteps) < 1) 
-        {
+        if (filerow[0] == '#' || rowlen(filerow) < 1)
+            continue;
+        if (sscanf(filerow, "%d", &TimeSteps) < 1) {
             fprintf(stderr, "(Error) >> Cannot read TimeSteps from string.\n");
             exit(-1);
         }
@@ -352,8 +330,7 @@ void InitGrid(char* InputFile)
     return;
 }
 
-void gpuInitGrid(char* InputFile)
-{
+void gpuInitGrid(char *InputFile) {
     /* Output:
     !  MeasuredValues(:,3) - values read from input file
     !  Initialization of FieldWeight(Xdots,Ydots) and FieldCoord(Xdots,Ydots,2)
@@ -361,15 +338,14 @@ void gpuInitGrid(char* InputFile)
 
     int valrows, st;
     char filerow[80];
-    FILE* inpunit;
+    FILE *inpunit;
 
     cudaError_t err;
 
     fprintf(stdout, "(NO CPU) >> Initializing grid ...\n");
 
     inpunit = fopen(InputFile, "r");
-    if (!inpunit)
-    {
+    if (!inpunit) {
         fprintf(stderr, "(Error) >>> Cannot access file %s\n", InputFile);
         exit(-1);
     }
@@ -377,50 +353,41 @@ void gpuInitGrid(char* InputFile)
     // Read measured values
     NumInputValues = 0;
     valrows = 0;
-    while (1)
-    {
+    while (1) {
         st = readrow(filerow, 80, inpunit);
-        if (filerow[0] == '#') continue;
-        if (NumInputValues <= 0)
-        {
-            if (sscanf(filerow, "  %d", &NumInputValues) < 1)
-            {
-                if (NumInputValues <= 0)
-                {
+        if (filerow[0] == '#')
+            continue;
+        if (NumInputValues <= 0) {
+            if (sscanf(filerow, "  %d", &NumInputValues) < 1) {
+                if (NumInputValues <= 0) {
                     fprintf(stderr, "(Error) >> there seems to be %d input values...\n", NumInputValues);
                     exit(-1);
                 }
-            }
-            else
-            {
-                MeasuredValues = (double*)malloc(sizeof(double) * NumInputValues * 3);
-                if (MeasuredValues == NULL)
-                {
+            } else {
+                MeasuredValues = (double *)malloc(sizeof(double) * NumInputValues * 3);
+                if (MeasuredValues == NULL) {
                     fprintf(stderr, "(Error) >> Cannot allocate tmpMeasuredValues[%d,3] :(\n", NumInputValues);
                     exit(-1);
                 }
             }
-        }
-        else
-        {
+        } else {
             if (sscanf(filerow, "%lf %lf %lf",
-                &MeasuredValues[index2D(valrows, 0, NumInputValues)],  // X coord
-                &MeasuredValues[index2D(valrows, 1, NumInputValues)],  // Y coord
-                &MeasuredValues[index2D(valrows, 2, NumInputValues)])  // Measured value
-                < 3)
-            {
+                       &MeasuredValues[index2D(valrows, 0, NumInputValues)], // X coord
+                       &MeasuredValues[index2D(valrows, 1, NumInputValues)], // Y coord
+                       &MeasuredValues[index2D(valrows, 2, NumInputValues)]) // Measured value
+                < 3) {
                 fprintf(stderr, "(Error) >>> something went wrong while reading MeasuredValues(%d,*)", valrows);
                 exit(-1);
             }
             valrows++;
-            if (valrows >= NumInputValues) break;
+            if (valrows >= NumInputValues)
+                break;
         }
     }
 
     /* Create and initialize FieldWeight */
     err = cudaMalloc(&FieldWeight, sizeof(int) * Xdots * Ydots);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error) >> Cannot allocate FieldWeight[%d,%d] on GPU\n", Xdots, Ydots);
         exit(-1);
     }
@@ -428,8 +395,7 @@ void gpuInitGrid(char* InputFile)
 
     /* Create and initialize FieldCoord */
     err = cudaMalloc(&FieldCoord, sizeof(double) * Xdots * Ydots * 2);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error) >> Cannot allocate FieldCoord[%d,%d,2] on GPU\n", Xdots, Ydots);
         exit(-1);
     }
@@ -437,31 +403,26 @@ void gpuInitGrid(char* InputFile)
 
     /* Now read Sreal, Simag, Rreal, Rimag */
     Sreal = Simag = Rreal = Rimag = 0.0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1)
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Sreal from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#') continue;
-        if (sscanf(filerow, "%lf", &Sreal) < 1)
-        {
+        if (filerow[0] == '#')
+            continue;
+        if (sscanf(filerow, "%lf", &Sreal) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Sreal from string.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Simag) < 1)
-        {
+        if (fscanf(inpunit, "%lf", &Simag) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Simag from input file.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Rreal) < 1)
-        {
+        if (fscanf(inpunit, "%lf", &Rreal) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Rreal from input file.\n");
             exit(-1);
         }
-        if (fscanf(inpunit, "%lf", &Rimag) < 1)
-        {
+        if (fscanf(inpunit, "%lf", &Rimag) < 1) {
             fprintf(stderr, "(Error) >> Cannot read Rimag from input file.\n");
             exit(-1);
         }
@@ -470,16 +431,14 @@ void gpuInitGrid(char* InputFile)
 
     /* Now read MaxIters */
     MaxIters = 0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1)
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#' || rowlen(filerow) < 1) continue;
-        if (sscanf(filerow, "%d", &MaxIters) < 1)
-        {
+        if (filerow[0] == '#' || rowlen(filerow) < 1)
+            continue;
+        if (sscanf(filerow, "%d", &MaxIters) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from string.\n");
             exit(-1);
         }
@@ -488,16 +447,14 @@ void gpuInitGrid(char* InputFile)
 
     /* Now read TimeSteps */
     TimeSteps = 0;
-    while (1)
-    {
-        if (readrow(filerow, 80, inpunit) < 1)
-        {
+    while (1) {
+        if (readrow(filerow, 80, inpunit) < 1) {
             fprintf(stderr, "(Error) >> Cannot read MaxIters from input file.\n");
             exit(-1);
         }
-        if (filerow[0] == '#' || rowlen(filerow) < 1) continue;
-        if (sscanf(filerow, "%d", &TimeSteps) < 1)
-        {
+        if (filerow[0] == '#' || rowlen(filerow) < 1)
+            continue;
+        if (sscanf(filerow, "%d", &TimeSteps) < 1) {
             fprintf(stderr, "(Error) >> Cannot read TimeSteps from string.\n");
             exit(-1);
         }
@@ -508,8 +465,7 @@ void gpuInitGrid(char* InputFile)
     return;
 }
 
-void FieldDistribution()
-{
+void FieldDistribution() {
     /*
     !  Compute theoretical value distribution of the perturbing field
     !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution function
@@ -522,41 +478,38 @@ void FieldDistribution()
 
     fprintf(stdout, "\t>> Computing theoretical perturbing field...\n");
 
-    x0 = Sreal; 
-    y0 = Simag; 
-    x1 = x0 + Rreal; 
+    x0 = Sreal;
+    y0 = Simag;
+    x1 = x0 + Rreal;
     y1 = y0 + Rimag;
 
     // How many intervals? It should be safe to use SQRT(Xdots)
     M = sqrt((double)Xdots);
     N = sqrt((double)Ydots);
 
-    Nm1 = N - 1;  // Grid points minus boundary
-    Mm1 = M - 1;  // Grid points minus boundary
+    Nm1 = N - 1; // Grid points minus boundary
+    Mm1 = M - 1; // Grid points minus boundary
 
     LA = Mm1 * Nm1; // unknown points
     TSlopeLength = LA;
 
     /* Allocate CoeffMatrix */
-    CoeffMatrix = (double*)malloc(sizeof(double) * LA * LA);
-    if (CoeffMatrix == NULL) 
-    {
+    CoeffMatrix = (double *)malloc(sizeof(double) * LA * LA);
+    if (CoeffMatrix == NULL) {
         fprintf(stderr, "(Error) >> Cannot allocate CoeffMatrix[%d,%d]\n", LA, LA);
         exit(-1);
     }
 
     /* Allocate TheorSlope */
-    TheorSlope = (double*)malloc(sizeof(double) * TSlopeLength * 3);
-    if (TheorSlope == NULL) 
-    {
+    TheorSlope = (double *)malloc(sizeof(double) * TSlopeLength * 3);
+    if (TheorSlope == NULL) {
         fprintf(stderr, "(Error) >> Cannot allocate TheorSlope[%d,3]\n", TSlopeLength);
         exit(-1);
     }
 
     /* Allocate B */
-    B = (double*)malloc(sizeof(double) * LA);
-    if (B == NULL) 
-    {
+    B = (double *)malloc(sizeof(double) * LA);
+    if (B == NULL) {
         fprintf(stderr, "(Error) >> Cannot allocate B[%d]\n", LA);
         exit(-1);
     }
@@ -566,9 +519,11 @@ void FieldDistribution()
     EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
 
     rc = LinEquSolve(CoeffMatrix, LA, B);
-    if (rc != 0) exit(-1);
+    if (rc != 0)
+        exit(-1);
 
-    for (i = 0; i < LA; i++) TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
+    for (i = 0; i < LA; i++)
+        TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
 
     free(CoeffMatrix);
     free(B);
@@ -576,13 +531,12 @@ void FieldDistribution()
     return;
 }
 
-void gpuFieldDistribution()
-{
+void gpuFieldDistribution() {
     /*
     !  Compute theoretical value distribution of the perturbing field
     !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution function
     */
-    double* CoeffMatrix, * B;
+    double *CoeffMatrix, *B;
     double x0, y0, x1, y1;
 
     int M, Mm1, N, Nm1, LA;
@@ -601,32 +555,29 @@ void gpuFieldDistribution()
     M = sqrt((double)Xdots);
     N = sqrt((double)Ydots);
 
-    Nm1 = N - 1;  // Grid points minus boundary
-    Mm1 = M - 1;  // Grid points minus boundary
+    Nm1 = N - 1; // Grid points minus boundary
+    Mm1 = M - 1; // Grid points minus boundary
 
     LA = Mm1 * Nm1; // unknown points
     TSlopeLength = LA;
 
     /* Allocate CoeffMatrix */
     err = cudaMalloc(&CoeffMatrix, sizeof(double) * LA * LA);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error) >> Cannot allocate CoeffMatrix[%d,%d] on GPU\n", LA, LA);
         exit(-1);
     }
 
     /* Allocate TheorSlope */
     err = cudaMalloc(&TheorSlope, sizeof(double) * TSlopeLength * 3);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error) >> Cannot allocate TheorSlope[%d,3] on GPU\n", TSlopeLength);
         exit(-1);
     }
 
     /* Allocate B */
     err = cudaMalloc(&B, sizeof(double) * LA);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error) >> Cannot allocate B[%d] on GPU\n", LA);
         exit(-1);
     }
@@ -648,8 +599,7 @@ void gpuFieldDistribution()
     return;
 }
 
-void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
-{
+void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {
     /*
     !  Compute "heated" points
     !  Output:
@@ -667,10 +617,8 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
     Xinc = Sr / (double)Xdots;
     Yinc = Si / (double)Ydots;
 
-    for (iy = 0; iy < Ydots; iy++) 
-    {
-        for (ix = 0; ix < Xdots; ix++) 
-        {
+    for (iy = 0; iy < Ydots; iy++) {
+        for (ix = 0; ix < Xdots; ix++) {
             ca = Xinc * ix + Ir;
             cb = Yinc * iy + Ii;
             FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)] = ca;
@@ -678,9 +626,9 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
             rad = ca * ca * ((double)1.0 + (cb / ca) * (cb / ca));
             zan = 0.0;
             zbn = 0.0;
-            for (iz = 1; iz <= MaxIt; iz++) 
-            {
-                if (rad > (double)4.0) break;
+            for (iz = 1; iz <= MaxIt; iz++) {
+                if (rad > (double)4.0)
+                    break;
                 za = zan;
                 zb = zbn;
                 zan = ca + (za - zb) * (za + zb);
@@ -694,8 +642,7 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
     return;
 }
 
-void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
-{
+void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {
     /*
     !  Compute "heated" points
     !  Output:
@@ -712,18 +659,17 @@ void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt)
     Xinc = Sr / (double)Xdots;
     Yinc = Si / (double)Ydots;
 
-    gpuSensiblePointsKernel<<<dim3(8,8,4), dim3(8,8,2)>>>(Ir, Ii, Xinc, Yinc, MaxIt, FieldCoord, FieldWeight);
+    gpuSensiblePointsKernel<<<dim3(8, 8, 4), dim3(8, 8, 2)>>>(Ir, Ii, Xinc, Yinc, MaxIt, FieldCoord, FieldWeight);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
-    if (err != cudaSuccess) printf("(CUDA Error) >> %s\n", cudaGetErrorString(err));
+    if (err != cudaSuccess)
+        printf("(CUDA Error) >> %s\n", cudaGetErrorString(err));
 
     return;
 }
 
-__global__
-void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double *FieldCoord, int *FieldWeight)
-{
+__global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double *FieldCoord, int *FieldWeight) {
     double ca, cb, za, zb;
     double rad, zan, zbn;
 
@@ -737,10 +683,8 @@ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int
 
     int ix, iy, iz;
 
-    for (iy = idy; iy < Ydots; iy += sizeY)
-    {
-        for (ix = idx; ix < Xdots; ix += sizeX)
-        {
+    for (iy = idy; iy < Ydots; iy += sizeY) {
+        for (ix = idx; ix < Xdots; ix += sizeX) {
             ca = Xinc * ix + Ir;
             cb = Yinc * iy + Ii;
             FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)] = ca;
@@ -748,10 +692,11 @@ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int
             rad = ca * ca * ((double)1.0 + (cb / ca) * (cb / ca));
             zan = 0.0;
             zbn = 0.0;
-            for (iz = idz; iz <= MaxIt; iz += sizeZ)
-            {
-                if (iz == 0) break;
-                if (rad > (double)4.0) break;
+            for (iz = idz; iz <= MaxIt; iz += sizeZ) {
+                if (iz == 0)
+                    break;
+                if (rad > (double)4.0)
+                    break;
                 za = zan;
                 zb = zbn;
                 zan = ca + (za - zb) * (za + zb);
@@ -763,8 +708,7 @@ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int
     }
 }
 
-void FieldInit()
-{
+void FieldInit() {
     /*
     ! Initialize field values in the grid. Values are computed on the basis
     ! of the measured values read in subroutine InitGrid and the gross grid
@@ -786,18 +730,16 @@ void FieldInit()
     fprintf(stdout, "\t>> Initializing entity of field effects...\n");
 
     /* Allocate FieldValues */
-    FieldValues = (double*)malloc(sizeof(double) * Xdots * Ydots * 2);
-    if (FieldValues == NULL) 
-    {
+    FieldValues = (double *)malloc(sizeof(double) * Xdots * Ydots * 2);
+    if (FieldValues == NULL) {
         fprintf(stderr, "(Error@FieldInit) >> Cannot allocate FieldValues[%d,%d,2]\n", Xdots, Ydots);
         exit(-1);
     }
     SetDoubleValue(FieldValues, Xdots * Ydots * 2, (double)0); // OPP: you can use calloc?
 
     /* Allocate DiffValues */
-    DiffValues = (double*)malloc(sizeof(double) * NumInputValues);
-    if (DiffValues == NULL) 
-    {
+    DiffValues = (double *)malloc(sizeof(double) * NumInputValues);
+    if (DiffValues == NULL) {
         fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d]\n", NumInputValues);
         exit(-1);
     }
@@ -805,8 +747,7 @@ void FieldInit()
 
     /* Compute discrepancy between Measured and Theoretical value */
     DiscrValue = 0.0;
-    for (rv = 0; rv < NumInputValues; rv++) 
-    {
+    for (rv = 0; rv < NumInputValues; rv++) {
         xc = MeasuredValues[index2D(rv, 0, NumInputValues)];
         yc = MeasuredValues[index2D(rv, 1, NumInputValues)];
 
@@ -821,7 +762,8 @@ void FieldInit()
 
     // Compute standard deviation
     sd = 0.0;
-    for (rv = 0; rv < NumInputValues; rv++) sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
+    for (rv = 0; rv < NumInputValues; rv++)
+        sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
     sd = sqrt(sd / (double)NumInputValues);
 
     // Print statistics
@@ -835,8 +777,7 @@ void FieldInit()
     return;
 }
 
-void gpuFieldInit()
-{
+void gpuFieldInit() {
     /*
     ! Initialize field values in the grid. Values are computed on the basis
     ! of the measured values read in subroutine InitGrid and the gross grid
@@ -853,7 +794,7 @@ void gpuFieldInit()
 
     int rv;
     double xc, yc, ev, sv, sd, DiscrValue;
-    double* DiffValues;
+    double *DiffValues;
 
     cudaError_t err;
 
@@ -861,17 +802,15 @@ void gpuFieldInit()
 
     /* Allocate FieldValues */
     err = cudaMalloc(&FieldValues, sizeof(double) * Xdots * Ydots * 2);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error@FieldInit) >> Cannot allocate FieldValues[%d,%d,2] in GPU\n", Xdots, Ydots);
         exit(-1);
     }
     cudaMemset(FieldValues, 0, sizeof(double) * Xdots * Ydots * 2);
 
     /* Allocate DiffValues */
-    DiffValues = (double*)malloc(sizeof(double) * NumInputValues);
-    if (DiffValues == NULL)
-    {
+    DiffValues = (double *)malloc(sizeof(double) * NumInputValues);
+    if (DiffValues == NULL) {
         fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d]\n", NumInputValues);
         exit(-1);
     }
@@ -880,8 +819,7 @@ void gpuFieldInit()
     /* Compute discrepancy between Measured and Theoretical value */
 
     DiscrValue = 0.0;
-    for (rv = 0; rv < NumInputValues; rv++)
-    {
+    for (rv = 0; rv < NumInputValues; rv++) {
         xc = MeasuredValues[index2D(rv, 0, NumInputValues)];
         yc = MeasuredValues[index2D(rv, 1, NumInputValues)];
 
@@ -896,21 +834,21 @@ void gpuFieldInit()
 
     // Compute standard deviation
     sd = 0.0;
-    for (rv = 0; rv < NumInputValues; rv++) sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
+    for (rv = 0; rv < NumInputValues; rv++)
+        sd = sd + (DiffValues[rv] - DiscrValue) * (DiffValues[rv] - DiscrValue);
     sd = sqrt(sd / (double)NumInputValues);
 
     // Print statistics
     fprintf(stdout, "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, %12.3e\n", NumInputValues, DiscrValue, sd);
 
     // Compute FieldValues stage 1
-    
+
     gpuFieldPoints(DiscrValue);
 
     free(DiffValues);
 }
 
-void Cooling(int steps)
-{
+void Cooling(int steps) {
     /*
     !  Compute evolution of the effects of the field
     !  Input/Output:
@@ -926,27 +864,25 @@ void Cooling(int steps)
     sprintf(fname, "FieldValues0000");
 
     vmin = vmax = 0.0;
-    //RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
+    // RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
     Statistics(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], 0);
 
     iz = 1;
-    for (it = 1; it <= steps; it++) 
-    {
+    for (it = 1; it <= steps; it++) {
         // Update the value of grid points
         Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
         iz = 3 - iz;
 
-        // Print and show results 
+        // Print and show results
         sprintf(fname, "FieldValues%4.4d", it);
-        //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
+        // if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
         Statistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], it);
     }
 
     return;
 }
 
-void gpuCooling(int steps)
-{
+void gpuCooling(int steps) {
     /*
     !  Compute evolution of the effects of the field
     !  Input/Output:
@@ -957,41 +893,39 @@ void gpuCooling(int steps)
     char fname[80];
     double vmin, vmax;
 
-    double* tmp;
+    double *tmp;
     int reduceLayer = (Xdots * Ydots + 1) / 2;
 
     cudaError_t err;
 
     /* Allocate space for temporary results */
     err = cudaMalloc(&tmp, sizeof(double) * reduceLayer * 4);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
         return;
     }
 
-    // -------------- 
+    // --------------
 
     fprintf(stdout, "\t>> Computing cooling of field effects ...\n");
     fprintf(stdout, "\t... %d steps ...\n", steps);
     sprintf(fname, "FieldValues0000");
 
     vmin = vmax = 0.0;
-    //RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
+    // RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, 0, Xdots, Ydots)], &vmin, &vmax, fname);
     gpuStatistics(Xdots, Ydots, FieldValues, tmp, 0);
 
     iz = 1;
-    for (it = 1; it <= steps; it++)
-    {
+    for (it = 1; it <= steps; it++) {
         // Update the value of grid points
         gpuUpdate(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
         cudaDeviceSynchronize();
 
         iz = 3 - iz;
 
-        // Print and show results 
+        // Print and show results
         sprintf(fname, "FieldValues%4.4d", it);
-        //if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
+        // if (it % 4 == 0) RealData2ppm(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &vmin, &vmax, fname);
         gpuStatistics(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], tmp, it);
     }
 
@@ -1002,24 +936,20 @@ void gpuCooling(int steps)
 
 /* SUB-FUNCTIONS */
 
-void GridDef(double x0, double x1, double y0, double y1, int N, double* Pts)
-{
+void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts) {
     double x, y, dx, dy;
     int i, j, np, Mm1, Nm1;
 
     Mm1 = sqrt((double)Xdots) - 1;
     Nm1 = sqrt((double)Ydots) - 1;
-    dx = (x1 - x0) / (double)N; 
+    dx = (x1 - x0) / (double)N;
     dy = (y1 - y0) / (double)N;
 
     np = -1;
-    for (i = 0; i < Mm1; i++) 
-    {
-        for (j = 0; j < Nm1; j++) 
-        {
+    for (i = 0; i < Mm1; i++) {
+        for (j = 0; j < Nm1; j++) {
             np++;
-            if (np > Mm1 * Nm1) 
-            {
+            if (np > Mm1 * Nm1) {
                 fprintf(stderr, "(Error@GridDef) >> NP = %d > N*N = %d\n", np, Nm1 * Nm1);
                 exit(-1);
             }
@@ -1032,8 +962,7 @@ void GridDef(double x0, double x1, double y0, double y1, int N, double* Pts)
     return;
 }
 
-void gpuGridDef(double x0, double x1, double y0, double y1, int N, double* Pts)
-{
+void gpuGridDef(double x0, double x1, double y0, double y1, int N, double *Pts) {
     double dx, dy;
     int Mm1, Nm1;
 
@@ -1047,17 +976,14 @@ void gpuGridDef(double x0, double x1, double y0, double y1, int N, double* Pts)
     return;
 }
 
-__global__
-void gpuGridDefKernel(double x0, double y0, double dx, double dy, double* Pts, int Nm1, int len, int TSlopeLength)
-{
+__global__ void gpuGridDefKernel(double x0, double y0, double dx, double dy, double *Pts, int Nm1, int len, int TSlopeLength) {
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int gridSize = blockDim.x * gridDim.x;
 
     int np, i, j;
     double x, y;
 
-    for (np = id; np < len; np += gridSize)
-    {
+    for (np = id; np < len; np += gridSize) {
         i = np / Nm1;
         j = np % Nm1;
 
@@ -1068,8 +994,7 @@ void gpuGridDefKernel(double x0, double y0, double dx, double dy, double* Pts, i
     }
 }
 
-void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts)
-{
+void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts) {
     // Pts(LA,3) - inner grid point Coordinates
     // Rhs(LA)   - Linear equation Right Hand Side
     // A(LA,LA)  - Linear equation matrix
@@ -1080,14 +1005,13 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A
     //  Define A matrix and RHS
 
     Nm1 = N - 1;
-    dx = (x1 - x0) / (double)N; 
+    dx = (x1 - x0) / (double)N;
     dy = (y1 - y0) / (double)N;
 
     SetDoubleValue(A, LA * LA, (double)0); // OPP: you can use calloc?
-    SetDoubleValue(Rhs, LA, (double)0); // OPP: you can use calloc?
+    SetDoubleValue(Rhs, LA, (double)0);    // OPP: you can use calloc?
 
-    for (np = 0; np < LA; np++) 
-    {
+    for (np = 0; np < LA; np++) {
         x = Pts[index2D(np, 0, TSlopeLength)];
         y = Pts[index2D(np, 1, TSlopeLength)];
 
@@ -1095,59 +1019,55 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A
 
         Rhs[np] = (x + y) * dx * dy;
 
-        // define Eps function of grid dimensions 
+        // define Eps function of grid dimensions
         Eps = (dx + dy) / 20.0;
 
-        // where is P(x-dx,y) ? 
-        if (fabs((x - dx) - x0) < Eps) Rhs[np] = Rhs[np] - Solution(x0, y);
-        else 
-        {
+        // where is P(x-dx,y) ?
+        if (fabs((x - dx) - x0) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x0, y);
+        else {
             // Find pos = position of P(x-dx,y)
             pos = np - Nm1;
-            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)) > Eps) 
-            {
+            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)) > Eps) {
                 fprintf(stderr, "(Error@EqsDef) >> x-dx: pos, np, d = %d %d %lf\n", pos, np, fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x+dx,y) ? 
-        if (fabs((x + dx) - x1) < Eps) Rhs[np] = Rhs[np] - Solution(x1, y);
-        else 
-        {
+        // where is P(x+dx,y) ?
+        if (fabs((x + dx) - x1) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x1, y);
+        else {
             // Find pos = position of P(x+dx,y)
             pos = np + Nm1;
-            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)) > Eps) 
-            {
+            if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)) > Eps) {
                 fprintf(stderr, "(Error@EqsDef) >> x+dx: %lf\n", fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x,y-dy) ? 
-        if (fabs((y - dy) - y0) < Eps) Rhs[np] = Rhs[np] - Solution(x, y0);
-        else 
-        {
+        // where is P(x,y-dy) ?
+        if (fabs((y - dy) - y0) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x, y0);
+        else {
             // Find pos = position of P(x,y-dy)
             pos = np - 1;
-            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)) > Eps) 
-            {
+            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)) > Eps) {
                 fprintf(stderr, "(Error@EqsDef) >> y-dy: %lf\n", fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x,y+dy) ? 
-        if (fabs((y + dy) - y1) < Eps) Rhs[np] = Rhs[np] - Solution(x, y1);
-        else 
-        {
+        // where is P(x,y+dy) ?
+        if (fabs((y + dy) - y1) < Eps)
+            Rhs[np] = Rhs[np] - Solution(x, y1);
+        else {
             // Find pos = position of P(x,y-dy)
             pos = np + 1;
-            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)) > Eps) 
-            {
+            if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)) > Eps) {
                 fprintf(stderr, "(Error@EqsDef) >> y+dy: %lf\n", fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)));
                 exit(-1);
             }
@@ -1157,8 +1077,7 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A
     return;
 }
 
-void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double* A, double* Rhs, double* Pts)
-{
+void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts) {
     // Pts(LA,3) - inner grid point Coordinates
     // Rhs(LA)   - Linear equation Right Hand Side
     // A(LA,LA)  - Linear equation matrix
@@ -1176,21 +1095,18 @@ void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double
     cudaMemset(Rhs, 0, sizeof(double) * LA);
 
     gpuEqsDefKernel<<<6, 128>>>(x0, x1, y0, y1, Nm1, dx, dy, LA, A, Rhs, Pts, TSlopeLength);
-    
+
     return;
 }
 
-__global__
-void gpuEqsDefKernel(double x0, double x1, double y0, double y1, int Nm1, double dx, double dy, int LA, double* A, double* Rhs, double* Pts, int TSlopeLength)
-{
+__global__ void gpuEqsDefKernel(double x0, double x1, double y0, double y1, int Nm1, double dx, double dy, int LA, double *A, double *Rhs, double *Pts, int TSlopeLength) {
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int gridSize = blockDim.x * gridDim.x;
 
     int np, pos;
     double x, y, Eps;
 
-    for (np = id; np < LA; np += gridSize)
-    {
+    for (np = id; np < LA; np += gridSize) {
         x = Pts[index2D(np, 0, TSlopeLength)];
         y = Pts[index2D(np, 1, TSlopeLength)];
 
@@ -1198,40 +1114,40 @@ void gpuEqsDefKernel(double x0, double x1, double y0, double y1, int Nm1, double
 
         Rhs[np] = (x + y) * dx * dy;
 
-        // define Eps function of grid dimensions 
+        // define Eps function of grid dimensions
         Eps = (dx + dy) / 20.0;
 
-        // where is P(x-dx,y) ? 
-        if (fabs((x - dx) - x0) < Eps) Rhs[np] = Rhs[np] - gpuSolution(x0, y);
-        else
-        {
+        // where is P(x-dx,y) ?
+        if (fabs((x - dx) - x0) < Eps)
+            Rhs[np] = Rhs[np] - gpuSolution(x0, y);
+        else {
             // Find pos = position of P(x-dx,y)
             pos = np - Nm1;
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x+dx,y) ? 
-        if (fabs((x + dx) - x1) < Eps) Rhs[np] = Rhs[np] - gpuSolution(x1, y);
-        else
-        {
+        // where is P(x+dx,y) ?
+        if (fabs((x + dx) - x1) < Eps)
+            Rhs[np] = Rhs[np] - gpuSolution(x1, y);
+        else {
             // Find pos = position of P(x+dx,y)
             pos = np + Nm1;
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x,y-dy) ? 
-        if (fabs((y - dy) - y0) < Eps) Rhs[np] = Rhs[np] - gpuSolution(x, y0);
-        else
-        {
+        // where is P(x,y-dy) ?
+        if (fabs((y - dy) - y0) < Eps)
+            Rhs[np] = Rhs[np] - gpuSolution(x, y0);
+        else {
             // Find pos = position of P(x,y-dy)
             pos = np - 1;
             A[index2D(np, pos, LA)] = 1.0;
         }
 
-        // where is P(x,y+dy) ? 
-        if (fabs((y + dy) - y1) < Eps) Rhs[np] = Rhs[np] - gpuSolution(x, y1);
-        else
-        {
+        // where is P(x,y+dy) ?
+        if (fabs((y + dy) - y1) < Eps)
+            Rhs[np] = Rhs[np] - gpuSolution(x, y1);
+        else {
             // Find pos = position of P(x,y-dy)
             pos = np + 1;
             A[index2D(np, pos, LA)] = 1.0;
@@ -1239,63 +1155,51 @@ void gpuEqsDefKernel(double x0, double x1, double y0, double y1, int Nm1, double
     }
 }
 
-double Solution(double x, double y)
-{
+double Solution(double x, double y) {
     return ((x * x * x) + (y * y * y)) / (double)6.0;
 }
 
-__device__
-double gpuSolution(double x, double y)
-{
+__device__ double gpuSolution(double x, double y) {
     return ((x * x * x) + (y * y * y)) / (double)6.0;
 }
 
-int LinEquSolve(double* a, int n, double* b)
-{
+int LinEquSolve(double *a, int n, double *b) {
     /* Gauss-Jordan elimination algorithm */
     int i, j, k, l, icol, irow;
     int *indcol, *indrow, *ipiv;
     double bigger, temp;
 
     /* Allocate indcol */
-    indcol = (int*)malloc(sizeof(int) * n);
-    if (indcol == NULL) 
-    {
+    indcol = (int *)malloc(sizeof(int) * n);
+    if (indcol == NULL) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indcol[%d]\n", n);
-        return(-1);
+        return (-1);
     }
 
     /* Allocate indrow */
-    indrow = (int*)malloc(sizeof((int)1) * n);
-    if (indrow == NULL) 
-    {
+    indrow = (int *)malloc(sizeof((int)1) * n);
+    if (indrow == NULL) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indrow[%d]\n", n);
-        return(-1);
+        return (-1);
     }
 
     /* Allocate ipiv */
-    ipiv = (int*)malloc(sizeof((int)1) * n);
-    if (ipiv == NULL) 
-    {
+    ipiv = (int *)malloc(sizeof((int)1) * n);
+    if (ipiv == NULL) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate ipiv[%d]\n", n);
-        return(-1);
+        return (-1);
     }
     SetIntValue(ipiv, n, 0); // OPP: you can use calloc?
 
     /* Actual algorithm */
 
-    for (i = 0; i < n; i++) 
-    {
+    for (i = 0; i < n; i++) {
         bigger = 0.0;
 
-        for (j = 0; j < n; j++) 
-        {
-            if (ipiv[j] != 1) 
-            {
-                for (k = 0; k < n; k++) 
-                {
-                    if (ipiv[k] == 0 && bigger <= fabs(a[index2D(j, k, n)])) 
-                    {
+        for (j = 0; j < n; j++) {
+            if (ipiv[j] != 1) {
+                for (k = 0; k < n; k++) {
+                    if (ipiv[k] == 0 && bigger <= fabs(a[index2D(j, k, n)])) {
                         bigger = fabs(a[index2D(j, k, n)]);
                         irow = j;
                         icol = k;
@@ -1306,10 +1210,8 @@ int LinEquSolve(double* a, int n, double* b)
 
         ipiv[icol] = ipiv[icol] + 1;
 
-        if (irow != icol) 
-        {
-            for (l = 0; l < n; l++) 
-            {
+        if (irow != icol) {
+            for (l = 0; l < n; l++) {
                 temp = a[index2D(irow, l, n)];
                 a[index2D(irow, l, n)] = a[index2D(icol, l, n)];
                 a[index2D(icol, l, n)] = temp;
@@ -1322,8 +1224,7 @@ int LinEquSolve(double* a, int n, double* b)
         indrow[i] = irow;
         indcol[i] = icol;
 
-        if (a[index2D(icol, icol, n)] == 0.0) 
-        {
+        if (a[index2D(icol, icol, n)] == 0.0) {
             fprintf(stderr, "(Error@LinEquSolve) >> a(%d,%d): singular matrix!", icol, icol);
             return -2;
         }
@@ -1331,18 +1232,16 @@ int LinEquSolve(double* a, int n, double* b)
         temp = (double)1.0 / a[index2D(icol, icol, n)];
         a[index2D(icol, icol, n)] = 1.0;
 
-        for (l = 0; l < n; l++) a[index2D(icol, l, n)] = a[index2D(icol, l, n)] * temp;
+        for (l = 0; l < n; l++)
+            a[index2D(icol, l, n)] = a[index2D(icol, l, n)] * temp;
 
         b[icol] = b[icol] * temp;
 
-        for (l = 0; l < n; l++) 
-        {
-            if (l != icol) 
-            {
+        for (l = 0; l < n; l++) {
+            if (l != icol) {
                 temp = a[index2D(l, icol, n)];
                 a[index2D(l, icol, n)] = 0.0;
-                for (k = 0; k < n; k++) 
-                {
+                for (k = 0; k < n; k++) {
                     a[index2D(l, k, n)] = a[index2D(l, k, n)] - a[index2D(icol, k, n)] * temp;
                 }
                 b[l] = b[l] - b[icol] * temp;
@@ -1350,12 +1249,9 @@ int LinEquSolve(double* a, int n, double* b)
         }
     }
 
-    for (l = n - 1; l >= 0; l--) 
-    {
-        if (indrow[l] != indcol[l]) 
-        {
-            for (k = 0; k < n; k++) 
-            {
+    for (l = n - 1; l >= 0; l--) {
+        if (indrow[l] != indcol[l]) {
+            for (k = 0; k < n; k++) {
                 temp = a[index2D(k, indrow[l], n)];
                 a[index2D(k, indrow[l], n)] = a[index2D(k, indcol[l], n)];
                 a[index2D(k, indcol[l], n)] = temp;
@@ -1370,62 +1266,57 @@ int LinEquSolve(double* a, int n, double* b)
     return 0;
 }
 
-int gpuLinEquSolve(double* a, int n, double* b)
-{
+int gpuLinEquSolve(double *a, int n, double *b) {
     /* Gauss-Jordan elimination algorithm */
-    int* indcol, * indrow, * ipiv;
+    int *indcol, *indrow, *ipiv;
 
     cudaError_t err;
 
     /* Allocate indcol */
     err = cudaMalloc(&indcol, sizeof(int) * n);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indcol[%d] on GPU\n", n);
-        return(-1);
+        return (-1);
     }
 
     /* Allocate indrow */
     err = cudaMalloc(&indrow, sizeof(int) * n);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate indrow[%d] on GPU\n", n);
-        return(-1);
+        return (-1);
     }
 
     /* Allocate ipiv */
     err = cudaMalloc(&ipiv, sizeof(int) * n);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate ipiv[%d] on GPU\n", n);
-        return(-1);
+        return (-1);
     }
     cudaMemset(ipiv, 0, sizeof(int) * n);
 
     /* Actual algorithm */
 
-    int* maxIndex;
-    double* maxima;
+    int *maxIndex;
+    double *maxima;
 
     err = cudaMalloc(&maxIndex, sizeof(int) * n);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate maxIndex on GPU\n", n);
-        return(-1);
+        return (-1);
     }
 
     err = cudaMalloc(&maxima, sizeof(double) * n);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(Error@LinEquSolve) >> Cannot allocate maxima on GPU\n", n);
-        return(-1);
+        return (-1);
     }
 
     gpuLinEquSolveKernel<<<32, 256>>>(maxima, maxIndex, a, b, indrow, indcol, ipiv, n);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
-    if (err != cudaSuccess) printf("(CUDA Error) >> %s\n", cudaGetErrorString(err));
+    if (err != cudaSuccess)
+        printf("(CUDA Error) >> %s\n", cudaGetErrorString(err));
 
     cudaFree(indcol);
     cudaFree(indrow);
@@ -1436,28 +1327,21 @@ int gpuLinEquSolve(double* a, int n, double* b)
     return 0;
 }
 
-__global__
-void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, int* indrow, int* indcol, int* ipiv, int n)
-{
+__global__ void gpuLinEquSolveKernel(double *maxima, int *maxIndex, double *a, double *b, int *indrow, int *indcol, int *ipiv, int n) {
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int gridSize = blockDim.x * gridDim.x;
 
     int iter, i, j, k, icol;
     double max, tmp;
 
-    for (iter = 0; iter < n; iter++)
-    {
-        for (i = id; i < n; i += gridSize)
-        {
+    for (iter = 0; iter < n; iter++) {
+        for (i = id; i < n; i += gridSize) {
             max = 0;
             icol = 0;
 
-            if (ipiv[i] != 1)
-            {
-                for (j = 0; j < n; j++)
-                {
-                    if (ipiv[j] == 0 && max <= fabs(a[index2D(i, j, n)]))
-                    {
+            if (ipiv[i] != 1) {
+                for (j = 0; j < n; j++) {
+                    if (ipiv[j] == 0 && max <= fabs(a[index2D(i, j, n)])) {
                         max = fabs(a[index2D(i, j, n)]);
                         icol = j;
                     }
@@ -1470,12 +1354,12 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         __syncthreads();
 
-        if (id == 0)
-        {
+        if (id == 0) {
             j = 0;
 
             for (i = 1; i < n; i++)
-                if (maxima[i] > maxima[j]) j = i;
+                if (maxima[i] > maxima[j])
+                    j = i;
 
             maxRow = j;
             maxCol = maxIndex[j];
@@ -1485,25 +1369,21 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         __syncthreads();
 
-        if (maxRow != maxCol)
-        {
-            for (i = id; i < n; i += gridSize)
-            {
+        if (maxRow != maxCol) {
+            for (i = id; i < n; i += gridSize) {
                 tmp = a[index2D(maxRow, i, n)];
                 a[index2D(maxRow, i, n)] = a[index2D(maxCol, i, n)];
                 a[index2D(maxCol, i, n)] = tmp;
             }
 
-            if (id == 0)
-            {
+            if (id == 0) {
                 tmp = b[maxRow];
                 b[maxRow] = b[maxCol];
                 b[maxCol] = tmp;
             }
         }
 
-        if (id == 0)
-        {
+        if (id == 0) {
             indrow[iter] = maxRow;
             indcol[iter] = maxCol;
         }
@@ -1512,28 +1392,23 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
 
         // TODO: Missing check on singularity
 
-        if (id == 0)
-        {
+        if (id == 0) {
             temp = a[index2D(maxCol, maxCol, n)];
             a[index2D(maxCol, maxCol, n)] = 1.0;
             b[maxCol] /= temp;
         }
 
-        for (i = id; i < n; i += gridSize)
-        {
+        for (i = id; i < n; i += gridSize) {
             a[index2D(maxCol, i, n)] /= temp;
         }
 
         __syncthreads();
 
-        for (i = id; i < n; i += gridSize)
-        {
-            if (i != maxCol)
-            {
+        for (i = id; i < n; i += gridSize) {
+            if (i != maxCol) {
                 tmp = a[index2D(i, maxCol, n)];
                 a[index2D(i, maxCol, n)] = 0.0;
-                for (k = 0; k < n; k++)
-                {
+                for (k = 0; k < n; k++) {
                     a[index2D(i, k, n)] = a[index2D(i, k, n)] - a[index2D(maxCol, k, n)] * tmp;
                 }
                 b[i] = b[i] - b[maxCol] * tmp;
@@ -1544,36 +1419,33 @@ void gpuLinEquSolveKernel(double* maxima, int* maxIndex, double* a, double* b, i
     }
 }
 
-double NearestValue(double xc, double yc, int ld, double* Values)
-{
+double NearestValue(double xc, double yc, int ld, double *Values) {
     // look for the best values near xc, yc coordinates
     double v;
 
     double d, md; // minimum distance
-    int np; // number of nearest points
+    int np;       // number of nearest points
     int i;
 
     md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) +
          ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
 
     // Compute lowest distance
-    for (i = 0; i < ld; i++) 
-    {
+    for (i = 0; i < ld; i++) {
         d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
             ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md > d) md = d;
+        if (md > d)
+            md = d;
     }
 
     np = 0;
     v = 0.0;
 
     // Compute nearest value
-    for (i = 0; i < ld; i++) 
-    {
+    for (i = 0; i < ld; i++) {
         d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
             ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md == d) 
-        {
+        if (md == d) {
             // add contributed value
             np = np + 1;
             v = v + Values[index2D(i, 2, ld)];
@@ -1586,46 +1458,41 @@ double NearestValue(double xc, double yc, int ld, double* Values)
     return v;
 }
 
-double gpuNearestValue(double xc, double yc, int ld, double* Values)
-{
+double gpuNearestValue(double xc, double yc, int ld, double *Values) {
     double v;
 
-    double* dist;
-    int* mask;
-    double* partialResult;
+    double *dist;
+    int *mask;
+    double *partialResult;
 
     cudaError_t err;
 
     /* Allocate dist */
     err = cudaMalloc(&dist, sizeof(double) * ld);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> Cannot allocate dist in GPU\n");
         exit(-1);
     }
 
     /* Allocate mask */
     err = cudaMalloc(&mask, sizeof(int) * ld);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> Cannot allocate mask in GPU\n");
         exit(-1);
     }
 
     /* Allocate partialResult */
     err = cudaMalloc(&partialResult, sizeof(double) * ld);
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> Cannot allocate partialResult in GPU\n");
         exit(-1);
     }
 
-    gpuNearestValueKernel<<<1, 768 >>>(xc, yc, Values, dist, mask, partialResult, ld);
+    gpuNearestValueKernel<<<1, 768>>>(xc, yc, Values, dist, mask, partialResult, ld);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
         exit(-1);
     }
@@ -1639,9 +1506,7 @@ double gpuNearestValue(double xc, double yc, int ld, double* Values)
     return v;
 }
 
-__global__
-void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, int* mask, double* partialResult, int n)
-{
+__global__ void gpuNearestValueKernel(double xc, double yc, double *Values, double *dist, int *mask, double *partialResult, int n) {
     int i;
     double a, b, v;
     __shared__ int np;
@@ -1649,8 +1514,7 @@ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, i
 
     // Compute distances
 
-    for (i = threadIdx.x; i < n; i += blockDim.x)
-    {
+    for (i = threadIdx.x; i < n; i += blockDim.x) {
         a = xc - Values[index2D(i, 0, n)];
         b = yc - Values[index2D(i, 1, n)];
         dist[i] = a * a + b * b;
@@ -1659,19 +1523,18 @@ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, i
 
     // Compute lowest distance
 
-    if (threadIdx.x == 0)
-    {
+    if (threadIdx.x == 0) {
         md = dist[0];
 
         for (i = 1; i < n; i++)
-            if (dist[i] < md) md = dist[i];
+            if (dist[i] < md)
+                md = dist[i];
     }
     __syncthreads();
 
     // Compute nearest value
 
-    for (i = threadIdx.x; i < n; i += blockDim.x)
-    {
+    for (i = threadIdx.x; i < n; i += blockDim.x) {
         mask[i] = (dist[i] == md);
         partialResult[i] = (dist[i] == md) * Values[index2D(i, 2, n)];
     }
@@ -1679,13 +1542,11 @@ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, i
 
     // Reduce
 
-    if (threadIdx.x == 0)
-    {
+    if (threadIdx.x == 0) {
         np = 0;
         v = 0.0;
 
-        for (i = 0; i < n; i++)
-        {
+        for (i = 0; i < n; i++) {
             np = np + mask[i];
             v = v + partialResult[i];
         }
@@ -1694,8 +1555,7 @@ void gpuNearestValueKernel(double xc, double yc, double* Values, double* dist, i
     }
 }
 
-void FieldPoints(double Diff)
-{
+void FieldPoints(double Diff) {
     int ix, iy;
     double xc, yc, sv;
     double rmin, rmax;
@@ -1703,10 +1563,8 @@ void FieldPoints(double Diff)
     rmax = MaxIntVal(Xdots * Ydots, FieldWeight);
     rmin = MinIntVal(Xdots * Ydots, FieldWeight);
 
-    for (iy = 0; iy < Ydots; iy++) 
-    {
-        for (ix = 0; ix < Xdots; ix++) 
-        {
+    for (iy = 0; iy < Ydots; iy++) {
+        for (ix = 0; ix < Xdots; ix++) {
             xc = FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)];
             yc = FieldCoord[index3D(ix, iy, 1, Xdots, Ydots)];
 
@@ -1716,12 +1574,10 @@ void FieldPoints(double Diff)
         }
     }
 
-    // Copy initial status 
+    // Copy initial status
     // OPP: use memcpy?
-    for (iy = 0; iy < Ydots; iy++) 
-    {
-        for (ix = 0; ix < Xdots; ix++) 
-        {
+    for (iy = 0; iy < Ydots; iy++) {
+        for (ix = 0; ix < Xdots; ix++) {
             FieldValues[index3D(ix, iy, 1, Xdots, Ydots)] = FieldValues[index3D(ix, iy, 0, Xdots, Ydots)];
         }
     }
@@ -1729,8 +1585,7 @@ void FieldPoints(double Diff)
     return;
 }
 
-void gpuFieldPoints(double Diff)
-{
+void gpuFieldPoints(double Diff) {
     cudaError_t err;
 
     MinMaxIntVal(FieldWeight, Xdots * Ydots);
@@ -1739,8 +1594,7 @@ void gpuFieldPoints(double Diff)
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
     }
 
@@ -1749,24 +1603,21 @@ void gpuFieldPoints(double Diff)
     return;
 }
 
-void MinMaxIntVal(int* Values, int len)
-{
-    int* tmpMax;
-    int* tmpMin;
+void MinMaxIntVal(int *Values, int len) {
+    int *tmpMax;
+    int *tmpMin;
 
     cudaError_t err;
 
     /* Allocate Temporary Results */
     err = cudaMalloc(&tmpMax, sizeof(int) * (len + 1));
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
         return;
     }
 
     err = cudaMalloc(&tmpMin, sizeof(int) * (len + 1));
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
         return;
     }
@@ -1775,8 +1626,7 @@ void MinMaxIntVal(int* Values, int len)
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
         return;
     }
@@ -1785,26 +1635,20 @@ void MinMaxIntVal(int* Values, int len)
     cudaFree(tmpMin);
 }
 
-__global__
-void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
-{
+__global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax) {
     int i;
     double a, b;
     int layerLength = (len + 1) / 2;
     int last;
 
-    for (i = threadIdx.x; i < layerLength; i += blockDim.x)
-    {
-        if ((2 * i + 1) < len)
-        {
+    for (i = threadIdx.x; i < layerLength; i += blockDim.x) {
+        if ((2 * i + 1) < len) {
             a = Values[2 * i];
             b = Values[2 * i + 1];
 
             tmpMin[i] = (a < b) ? a : b;
             tmpMax[i] = (a > b) ? a : b;
-        }
-        else 
-        {
+        } else {
             tmpMin[i] = Values[2 * i];
             tmpMax[i] = Values[2 * i];
         }
@@ -1815,12 +1659,9 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
 
     __syncthreads();
 
-    while (layerLength > 1)
-    {
-        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
-        {
-            if (i < layerLength - last)
-            {
+    while (layerLength > 1) {
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x) {
+            if (i < layerLength - last) {
                 a = tmpMin[2 * i];
                 b = tmpMin[2 * i + 1];
                 tmpMin[2 * i] = (a < b) ? a : b;
@@ -1833,8 +1674,7 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
 
         __syncthreads();
 
-        for (i = threadIdx.x; i < layerLength; i += blockDim.x)
-        {
+        for (i = threadIdx.x; i < layerLength; i += blockDim.x) {
             tmpMin[i] = tmpMin[2 * i];
             tmpMax[i] = tmpMax[2 * i];
         }
@@ -1845,16 +1685,13 @@ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax)
         __syncthreads();
     }
 
-    if (threadIdx.x == 0)
-    {
+    if (threadIdx.x == 0) {
         rMin = tmpMin[0];
         rMax = tmpMax[0];
     }
 }
 
-__global__
-void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeight, double* FieldValues, double Diff, int TSlopeLength, double* TheorSlope)
-{
+__global__ void gpuFieldPointsKernel(double *FieldCoord, int *FieldWeight, double *FieldValues, double Diff, int TSlopeLength, double *TheorSlope) {
     int iy, ix;
     double xc, yc, sv;
 
@@ -1863,10 +1700,8 @@ void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeight, double* FieldVal
     int sizeX = blockDim.x * gridDim.x;
     int sizeY = blockDim.y * gridDim.y;
 
-    for (iy = idy; iy < Ydots; iy += sizeY)
-    {
-        for (ix = idx; ix < Xdots; ix += sizeX)
-        {
+    for (iy = idy; iy < Ydots; iy += sizeY) {
+        for (ix = idx; ix < Xdots; ix += sizeX) {
             xc = FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)];
             yc = FieldCoord[index3D(ix, iy, 1, Xdots, Ydots)];
 
@@ -1877,9 +1712,7 @@ void gpuFieldPointsKernel(double* FieldCoord, int* FieldWeight, double* FieldVal
     }
 }
 
-__device__
-double deviceNearestValue(double xc, double yc, int ld, double* Values)
-{
+__device__ double deviceNearestValue(double xc, double yc, int ld, double *Values) {
     // look for the best values near xc, yc coordinates
     double v;
 
@@ -1891,23 +1724,21 @@ double deviceNearestValue(double xc, double yc, int ld, double* Values)
          ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
 
     // Compute lowest distance
-    for (i = 0; i < ld; i++)
-    {
+    for (i = 0; i < ld; i++) {
         d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
             ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md > d) md = d;
+        if (md > d)
+            md = d;
     }
 
     np = 0;
     v = 0.0;
 
     // Compute nearest value
-    for (i = 0; i < ld; i++)
-    {
+    for (i = 0; i < ld; i++) {
         d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
             ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md == d)
-        {
+        if (md == d) {
             // add contributed value
             np = np + 1;
             v = v + Values[index2D(i, 2, ld)];
@@ -1920,27 +1751,23 @@ double deviceNearestValue(double xc, double yc, int ld, double* Values)
     return v;
 }
 
-void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, char* name)
-{
+void RealData2ppm(int s1, int s2, double *rdata, double *vmin, double *vmax, char *name) {
     /* Simple subroutine to dump integer data in a PPM format */
 
-    int cm[3][256];  /* R,G,B, Colour Map */
-    FILE* ouni, * ColMap;
+    int cm[3][256]; /* R,G,B, Colour Map */
+    FILE *ouni, *ColMap;
     int i, j, rc, vp, vs;
-    double  rmin, rmax;
-    char  fname[80], jname[80], command[80];
+    double rmin, rmax;
+    char fname[80], jname[80], command[80];
 
     /* Load color map: 256 colours */
     ColMap = fopen("ColorMap.txt", "r");
-    if (ColMap == NULL) 
-    {
+    if (ColMap == NULL) {
         fprintf(stderr, "(Error@RealData2ppm) >> Cannot open ColorMap.txt\n");
         exit(-1);
     }
-    for (i = 0; i < 256; i++) 
-    {
-        if (fscanf(ColMap, " %3d %3d %3d", &cm[0][i], &cm[1][i], &cm[2][i]) < 3) 
-        {
+    for (i = 0; i < 256; i++) {
+        if (fscanf(ColMap, " %3d %3d %3d", &cm[0][i], &cm[1][i], &cm[2][i]) < 3) {
             fprintf(stderr, "(Error@RealData2ppm) >> reading colour map at line %d: r, g, b =", (i + 1));
             fprintf(stderr, " %3.3d %3.3d %3.3d\n", cm[0][i], cm[1][i], cm[2][i]);
             exit(1);
@@ -1953,7 +1780,8 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     strcat(fname, ".ppm\0");
 
     ouni = fopen(fname, "w");
-    if (!ouni) fprintf(stderr, "(Error@RealData2ppm) >> write access to file %s\n", fname);
+    if (!ouni)
+        fprintf(stderr, "(Error@RealData2ppm) >> write access to file %s\n", fname);
 
     /*  Magic code */
     fprintf(ouni, "P3\n");
@@ -1965,36 +1793,32 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     fprintf(ouni, "255\n");
 
     /*  Values from 0 to 255 */
-    rmin = MinDoubleVal(s1 * s2, rdata); 
+    rmin = MinDoubleVal(s1 * s2, rdata);
     rmax = MaxDoubleVal(s1 * s2, rdata);
 
-    if ((*vmin == *vmax) && (*vmin == (double)0.0)) 
-    {
-        *vmin = rmin; 
+    if ((*vmin == *vmax) && (*vmin == (double)0.0)) {
+        *vmin = rmin;
         *vmax = rmax;
-    }
-    else 
-    {
-        rmin = *vmin; 
+    } else {
+        rmin = *vmin;
         rmax = *vmax;
     }
 
     vs = 0;
-    for (i = 0; i < s1; i++) 
-    {
-        for (j = 0; j < s2; j++) 
-        {
+    for (i = 0; i < s1; i++) {
+        for (j = 0; j < s2; j++) {
             vp = (int)((rdata[i + (j * s1)] - rmin) * 255.0 / (rmax - rmin));
 
-            if (vp < 0) vp = 0;
-            if (vp > 255) vp = 255;
+            if (vp < 0)
+                vp = 0;
+            if (vp > 255)
+                vp = 255;
 
             vs++;
 
             fprintf(ouni, " %3.3d %3.3d %3.3d", cm[0][vp], cm[1][vp], cm[2][vp]);
 
-            if (vs >= 10) 
-            {
+            if (vs >= 10) {
                 fprintf(ouni, " \n");
                 vs = 0;
             }
@@ -2007,33 +1831,30 @@ void RealData2ppm(int s1, int s2, double* rdata, double* vmin, double* vmax, cha
     return;
 }
 
-void Statistics(int s1, int s2, double* rdata, int step)
-{
+void Statistics(int s1, int s2, double *rdata, int step) {
     double mnv, mv, mxv, sd;
     int i, j;
 
     // OPP: Can mean value and standard deviation be computed together?
 
-    // Compute MEAN VALUE 
+    // Compute MEAN VALUE
     mv = 0.0;
     mnv = mxv = rdata[0];
-    for (i = 0; i < s1; i++) 
-    {
-        for (j = 0; j < s2; j++) 
-        {
+    for (i = 0; i < s1; i++) {
+        for (j = 0; j < s2; j++) {
             mv = mv + rdata[i + (j * s1)];
-            if (mnv > rdata[i + (j * s1)]) mnv = rdata[i + (j * s1)];
-            if (mxv < rdata[i + (j * s1)]) mxv = rdata[i + (j * s1)];
+            if (mnv > rdata[i + (j * s1)])
+                mnv = rdata[i + (j * s1)];
+            if (mxv < rdata[i + (j * s1)])
+                mxv = rdata[i + (j * s1)];
         }
     }
     mv = mv / (double)(s1 * s2);
 
     // Compute STANDARD DEVIATION
     sd = 0.0;
-    for (i = 0; i < s1; i++) 
-    {
-        for (j = 0; j < s2; j++) 
-        {
+    for (i = 0; i < s1; i++) {
+        for (j = 0; j < s2; j++) {
             sd = sd + (rdata[i + (j * s1)] - mv) * (rdata[i + (j * s1)] - mv);
         }
     }
@@ -2044,14 +1865,13 @@ void Statistics(int s1, int s2, double* rdata, int step)
     return;
 }
 
-void gpuStatistics(int s1, int s2, double* rdata, double *tmp, int step)
-{
+void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step) {
     double mnv, mv, mxv, sd;
 
-    double* tmpMin;
-    double* tmpMax;
-    double* tmpMean;
-    double* tmpStd;
+    double *tmpMin;
+    double *tmpMax;
+    double *tmpMean;
+    double *tmpStd;
 
     cudaError_t err;
 
@@ -2066,8 +1886,7 @@ void gpuStatistics(int s1, int s2, double* rdata, double *tmp, int step)
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
-    if (err != cudaSuccess)
-    {
+    if (err != cudaSuccess) {
         fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
         return;
     }
@@ -2082,9 +1901,7 @@ void gpuStatistics(int s1, int s2, double* rdata, double *tmp, int step)
     return;
 }
 
-__global__
-void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer)
-{
+__global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer) {
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
@@ -2094,19 +1911,15 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
     int last;
 
-    for (i = id; i < layerLength; i += stride)
-    {
-        if ((2 * i + 1) < len)
-        {
+    for (i = id; i < layerLength; i += stride) {
+        if ((2 * i + 1) < len) {
             a = Values[2 * i];
             b = Values[2 * i + 1];
 
             tmpMin[i] = (a < b) ? a : b;
             tmpMax[i] = (a > b) ? a : b;
             tmpMean[i] = a + b;
-        }
-        else
-        {
+        } else {
             tmpMin[i] = Values[2 * i];
             tmpMax[i] = Values[2 * i];
             tmpMean[i] = Values[2 * i];
@@ -2118,12 +1931,9 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
     __syncthreads();
 
-    while (layerLength > 1)
-    {
-        for (i = id; i < layerLength; i += stride)
-        {
-            if (i < layerLength - last)
-            {
+    while (layerLength > 1) {
+        for (i = id; i < layerLength; i += stride) {
+            if (i < layerLength - last) {
                 a = tmpMin[2 * i];
                 b = tmpMin[2 * i + 1];
                 tmpMin[2 * i] = (a < b) ? a : b;
@@ -2140,8 +1950,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
         __syncthreads();
 
-        for (i = id; i < layerLength; i += stride)
-        {
+        for (i = id; i < layerLength; i += stride) {
             tmpMin[i] = tmpMin[2 * i];
             tmpMax[i] = tmpMax[2 * i];
             tmpMean[i] = tmpMean[2 * i];
@@ -2153,8 +1962,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
         __syncthreads();
     }
 
-    if (id == 0)
-    {   
+    if (id == 0) {
         a = tmpMin[0];
         b = tmpMin[1];
         rMin = (a < b) ? a : b;
@@ -2176,10 +1984,8 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
     layerLength = reduceLayer;
 
-    for (i = id; i < layerLength; i += stride)
-    {
-        if ((2 * i + 1) < len)
-        {
+    for (i = id; i < layerLength; i += stride) {
+        if ((2 * i + 1) < len) {
             a = Values[2 * i];
             b = Values[2 * i + 1];
 
@@ -2187,9 +1993,7 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
             b = (b - mv) * (b - mv);
 
             tmpStd[i] = a + b;
-        }
-        else
-        {
+        } else {
             a = Values[2 * i];
             a = (a - mv) * (a - mv);
 
@@ -2202,12 +2006,9 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
     __syncthreads();
 
-    while (layerLength > 1)
-    {
-        for (i = id; i < layerLength; i += stride)
-        {
-            if (i < layerLength - last)
-            {
+    while (layerLength > 1) {
+        for (i = id; i < layerLength; i += stride) {
+            if (i < layerLength - last) {
                 a = tmpStd[2 * i];
                 b = tmpStd[2 * i + 1];
                 tmpStd[2 * i] = a + b;
@@ -2216,7 +2017,8 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
 
         __syncthreads();
 
-        for (i = id; i < layerLength; i += stride) tmpStd[i] = tmpStd[2 * i];
+        for (i = id; i < layerLength; i += stride)
+            tmpStd[i] = tmpStd[2 * i];
 
         last = layerLength % 2;
         layerLength = (layerLength + 1) / 2;
@@ -2224,14 +2026,12 @@ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double
         __syncthreads();
     }
 
-    if (id == 0)
-    {
+    if (id == 0) {
         rStd = sqrt((tmpStd[0] + tmpStd[1]) / (double)len);
     }
 }
 
-void Update(int xdots, int ydots, double* u1, double* u2)
-{
+void Update(int xdots, int ydots, double *u1, double *u2) {
     /* Compute next step using matrices g1, g2 of dimension (nr,nc) */
 
     int i, j;
@@ -2246,37 +2046,28 @@ void Update(int xdots, int ydots, double* u1, double* u2)
     CX = dd / (hx * hx);
     CY = dd / (hy * hy);
 
-    for (j = 0; j < ydots - 1; j++) 
-    {
-        for (i = 0; i < xdots - 1; i++) 
-        {
-            if (i <= 0 || i >= xdots - 1) 
-            {
+    for (j = 0; j < ydots - 1; j++) {
+        for (i = 0; i < xdots - 1; i++) {
+            if (i <= 0 || i >= xdots - 1) {
                 u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
                 continue;
             }
 
-            if (j <= 0 || j >= ydots - 1) 
-            {
+            if (j <= 0 || j >= ydots - 1) {
                 u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
                 continue;
             }
 
-            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)]
-                                       + u1[index2D((i + 1), j, xdots)] + dgx * u1[index2D((i + 1), j, xdots)])
-                                       + CY * (u1[index2D(i, (j - 1), xdots)]
-                                       + u1[index2D(i, (j + 1), xdots)] + dgy * u1[index2D(i, j, xdots)]);
+            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)] + u1[index2D((i + 1), j, xdots)] + dgx * u1[index2D((i + 1), j, xdots)]) + CY * (u1[index2D(i, (j - 1), xdots)] + u1[index2D(i, (j + 1), xdots)] + dgy * u1[index2D(i, j, xdots)]);
         }
     }
 
-    for (j = 0; j < ydots - 1; j++) 
-    {
+    for (j = 0; j < ydots - 1; j++) {
         u2[index2D(0, j, xdots)] = u2[index2D(1, j, xdots)];
         u2[index2D(Xdots - 1, j, xdots)] = u2[index2D(Xdots - 2, j, xdots)];
     }
 
-    for (i = 0; i < xdots - 1; i++) 
-    {
+    for (i = 0; i < xdots - 1; i++) {
         u2[index2D(i, 0, xdots)] = u2[index2D(i, 1, xdots)];
         u2[index2D(i, Ydots - 1, xdots)] = u2[index2D(i, Ydots - 2, xdots)];
     }
@@ -2284,8 +2075,7 @@ void Update(int xdots, int ydots, double* u1, double* u2)
     return;
 }
 
-void gpuUpdate(int xdots, int ydots, double* u1, double* u2)
-{
+void gpuUpdate(int xdots, int ydots, double *u1, double *u2) {
     /* Compute next step using matrices g1, g2 of dimension (nr,nc) */
 
     int i, j;
@@ -2305,9 +2095,7 @@ void gpuUpdate(int xdots, int ydots, double* u1, double* u2)
     return;
 }
 
-__global__
-void gpuUpdateKernel(int xdots, int ydots, double* u1, double* u2, double CX, double CY, double dgx, double dgy)
-{
+__global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, double CX, double CY, double dgx, double dgy) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int idy = threadIdx.y + blockIdx.y * blockDim.y;
     int sizeX = blockDim.x * gridDim.x;
@@ -2315,41 +2103,30 @@ void gpuUpdateKernel(int xdots, int ydots, double* u1, double* u2, double CX, do
 
     int i, j;
 
-    for (j = idy; j < ydots - 1; j += sizeY)
-    {
-        for (i = idx; i < xdots - 1; i += sizeX)
-        {
-            if (i <= 0 || i >= xdots - 1)
-            {
+    for (j = idy; j < ydots - 1; j += sizeY) {
+        for (i = idx; i < xdots - 1; i += sizeX) {
+            if (i <= 0 || i >= xdots - 1) {
                 u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
                 continue;
             }
 
-            if (j <= 0 || j >= ydots - 1)
-            {
+            if (j <= 0 || j >= ydots - 1) {
                 u2[index2D(i, j, xdots)] = u1[index2D(i, j, xdots)];
                 continue;
             }
 
-            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)]
-                                     + u1[index2D((i + 1), j, xdots)] 
-                                     + dgx * u1[index2D((i + 1), j, xdots)])
-                                     + CY * (u1[index2D(i, (j - 1), xdots)]
-                                     + u1[index2D(i, (j + 1), xdots)] 
-                                     + dgy * u1[index2D(i, j, xdots)]);
+            u2[index2D(i, j, xdots)] = CX * (u1[index2D((i - 1), j, xdots)] + u1[index2D((i + 1), j, xdots)] + dgx * u1[index2D((i + 1), j, xdots)]) + CY * (u1[index2D(i, (j - 1), xdots)] + u1[index2D(i, (j + 1), xdots)] + dgy * u1[index2D(i, j, xdots)]);
         }
     }
 
     __syncthreads();
 
-    for (j = idy; j < ydots - 1; j += sizeY)
-    {
+    for (j = idy; j < ydots - 1; j += sizeY) {
         u2[index2D(0, j, xdots)] = u2[index2D(1, j, xdots)];
         u2[index2D(Xdots - 1, j, xdots)] = u2[index2D(Xdots - 2, j, xdots)];
     }
 
-    for (i = idx; i < xdots - 1; i += sizeX)
-    {
+    for (i = idx; i < xdots - 1; i += sizeX) {
         u2[index2D(i, 0, xdots)] = u2[index2D(i, 1, xdots)];
         u2[index2D(i, Ydots - 1, xdots)] = u2[index2D(i, Ydots - 2, xdots)];
     }
