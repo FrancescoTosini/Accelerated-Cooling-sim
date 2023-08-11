@@ -1,4 +1,4 @@
-﻿#ifndef __CUDACC__
+#ifndef __CUDACC__
 #define __CUDACC__
 #endif
 
@@ -7,35 +7,46 @@
 #include "device_functions.h"
 #include "device_launch_parameters.h"
 
+#include <cublas_v2.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "cuda_runtime.h"
+#include "cusolverDn.h"
+#include "device_launch_parameters.h"
+#include "factor.h"
+#include "helper_cuda.h"
+#include "helper_cusolver.h"
 #include "util.cu"
 
-#define index2D(i, j, LD1) i + ((j)*LD1)                           // element position in 2-D arrays
-#define index3D(i, j, k, LD1, LD2) i + ((j)*LD1) + ((k)*LD1 * LD2) // element position in 3-D arrays
+#define index2D(i, j, LD1) i + ((j)*LD1) // element position in 2-D arrays
+#define index3D(i, j, k, LD1, LD2) \
+    i + ((j)*LD1) + ((k)*LD1 * LD2) // element position in 3-D arrays
 
 #define Xdots 1400 // Plate grid resolution in 2 dimensions
 #define Ydots 1400 // May be changed to 1000x1000
+// #define ACCEL 1    // Should GPU be used?
+
+#define PATH_INPUT "./"
 
 // Parameters to compute point sensitiveness - values read from input file
 double Sreal, Simag, Rreal, Rimag;
 int MaxIters;
-int TimeSteps; // Evolution time steps
-
-double *MeasuredValues; // 2-D array - (NumInputValues,3) - Values read in input file
+int TimeSteps;          // Evolution time steps
+double *MeasuredValues; // 2-D array - (NumInputValues,3) - Values read in
+                        // input file
 int NumInputValues;     // Number of values read in input file
 double *TheorSlope;     // 2-D array - Theoretical value distribution
 int TSlopeLength;       // TheorSlope grid dimensions
-int *FieldWeight;       // 2-D array - (Xdots,Ydots) - Degree of sensitiveness to perturbing field
+int *FieldWeight;       // 2-D array - (Xdots,Ydots) - Degree of sensitiveness to
+                        // perturbing field
 double *FieldCoord;     // 3-D array - X, Y coordinates in field
 double *FieldValues;    // 3-D array - X, Y coordinates in field
 
 // Global GPU variables
-
 __device__ int maxRow, maxCol;
 __device__ double temp;
 __device__ double globalV;
@@ -49,8 +60,10 @@ __device__ double rStd;
 // Functions  prototypes
 
 void InitGrid(char *InputFile);
-int LinEquSolve(double *a, int n, double *b);
-void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts);
+int LinEquSolve(double *h_A, int n, double *h_b);
+int LinEquSolve_ACC(double *h_A, int n, double *h_b);
+void EqsDef(double x0, double x1, double y0, double y1, int N, int LA,
+            double *A, double *Rhs, double *Pts);
 double Solution(double x, double y);
 void FieldDistribution();
 void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts);
@@ -100,99 +113,88 @@ int main(int argc, char *argv[]) {
 
     t0 = clock();
     printf(">> Starting\n");
+    int devices = 0;
+
+    cudaError_t err = cudaGetDeviceCount(&devices);
+
+    if (devices > 0 && err == cudaSuccess) {
+        printf("running on GPU\n");
+    }
 
     // Read input file
     p0 = clock();
-    gpuInitGrid("Cooling.inp");
+#ifdef ACCEL
+    gpuInitGrid(PATH_INPUT "Cooling.inp");
+#else
+    InitGrid(PATH_INPUT "Cooling.inp");
+#endif
     p1 = clock();
     fprintf(stdout, ">> InitGrid ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // TheorSlope(TSlopeLength,3)
     p0 = clock();
+#ifdef ACCEL
     gpuFieldDistribution();
+#else
+    FieldDistribution();
+#endif
     p1 = clock();
-    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // FieldCoord(Xdots,Ydots,2), FieldWeight(Xdots,Ydots)
     p0 = clock();
+#ifdef ACCEL
     gpuSensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
+#else
+    SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
+#endif
     p1 = clock();
-    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
-    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
+    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) ->
+    // FieldValues(Xdots,Ydots,2)
     p0 = clock();
+#ifdef ACCEL
     gpuFieldInit();
+#else
+    FieldInit();
+#endif
     p1 = clock();
-    fprintf(stdout, ">> FieldInit ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> FieldInit ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     // FieldValues(Xdots,Ydots,2)
     p0 = clock();
+#ifdef ACCEL
     gpuCooling(TimeSteps);
+#else
+    Cooling(TimeSteps);
+#endif
     p1 = clock();
-    fprintf(stdout, ">> Cooling ended in %lf seconds\n", (double)(p1 - p0) / CLOCKS_PER_SEC);
+    fprintf(stdout, ">> Cooling ended in %lf seconds\n",
+            (double)(p1 - p0) / CLOCKS_PER_SEC);
 
     t1 = clock();
-    fprintf(stdout, ">> Computations ended in %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
-
+    fprintf(stdout, ">> Computations ended in %lf seconds\n",
+            (double)(t1 - t0) / CLOCKS_PER_SEC);
     // End Program
 
-    free(MeasuredValues);
+#ifdef ACCEL
     cudaFree(FieldWeight);
     cudaFree(FieldCoord);
     cudaFree(TheorSlope);
     cudaFree(FieldValues);
-
-    return 0;
-
-    /*time_t t0, t1, p0, p1;
-
-    time(&t0);
-    //fprintf(stdout, ">> Starting %s at: %s", argv[0], asctime(localtime(&t0)));
-    printf(">> Starting\n");
-
-    // Read input file
-    time(&p0);
-    InitGrid("Cooling.inp");
-    time(&p1);
-    fprintf(stdout, ">> InitGrid ended in %lf seconds\n", difftime(p1, p0));
-
-    // TheorSlope(TSlopeLength,3)
-    time(&p0);
-    FieldDistribution();
-    time(&p1);
-    fprintf(stdout, ">> FieldDistribution ended in %lf seconds\n", difftime(p1, p0));
-
-    // FieldCoord(Xdots,Ydots,2), FieldWeight(Xdots,Ydots)
-    time(&p0);
-    SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
-    time(&p1);
-    fprintf(stdout, ">> SensiblePoints ended in %lf seconds\n", difftime(p1, p0));
-
-    // MeasuredValues(:,3), FieldWeight(Xdots,Ydots) -> FieldValues(Xdots,Ydots,2)
-    time(&p0);
-    FieldInit();
-    time(&p1);
-    fprintf(stdout, ">> FieldInit ended in %lf seconds\n", difftime(p1, p0));
-
-    // FieldValues(Xdots,Ydots,2)
-    time(&p0);
-    Cooling(TimeSteps);
-    time(&p1);
-    fprintf(stdout, ">> Cooling ended in %lf seconds\n", difftime(p1, p0));
-
-    time(&t1);
-    fprintf(stdout, ">> Ending at: %s", asctime(localtime(&t1)));
-    fprintf(stdout, ">> Computations ended in %lf seconds\n", difftime(t1, t0));
-
-    // End Program
-
-    free(MeasuredValues);
+#else
     free(FieldWeight);
     free(FieldCoord);
     free(TheorSlope);
     free(FieldValues);
+#endif
+    free(MeasuredValues);
 
-    return 0;*/
+    return 0;
 }
 
 /* FUNCTIONS */
@@ -264,7 +266,8 @@ void InitGrid(char *InputFile) {
         fprintf(stderr, "(Error) >> Cannot allocate FieldCoord[%d,%d,2]\n", Xdots, Ydots);
         exit(-1);
     }
-    SetDoubleValue(FieldCoord, Xdots * Ydots * 2, (double)0); // OPP: you can use calloc?
+    SetDoubleValue(FieldCoord, Xdots * Ydots * 2,
+                   (double)0); // OPP: you can use calloc?
 
     /* Now read Sreal, Simag, Rreal, Rimag */
     Sreal = Simag = Rreal = Rimag = 0.0;
@@ -468,10 +471,12 @@ void gpuInitGrid(char *InputFile) {
 void FieldDistribution() {
     /*
     !  Compute theoretical value distribution of the perturbing field
-    !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution function
+    !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution
+    function
     */
     double *CoeffMatrix, *B;
     double x0, y0, x1, y1;
+    double t0, t1;
 
     int M, Mm1, N, Nm1, LA;
     int i, rc;
@@ -493,30 +498,22 @@ void FieldDistribution() {
     LA = Mm1 * Nm1; // unknown points
     TSlopeLength = LA;
 
-    /* Allocate CoeffMatrix */
     CoeffMatrix = (double *)malloc(sizeof(double) * LA * LA);
-    if (CoeffMatrix == NULL) {
-        fprintf(stderr, "(Error) >> Cannot allocate CoeffMatrix[%d,%d]\n", LA, LA);
-        exit(-1);
-    }
-
-    /* Allocate TheorSlope */
     TheorSlope = (double *)malloc(sizeof(double) * TSlopeLength * 3);
-    if (TheorSlope == NULL) {
-        fprintf(stderr, "(Error) >> Cannot allocate TheorSlope[%d,3]\n", TSlopeLength);
-        exit(-1);
-    }
-
-    /* Allocate B */
     B = (double *)malloc(sizeof(double) * LA);
-    if (B == NULL) {
-        fprintf(stderr, "(Error) >> Cannot allocate B[%d]\n", LA);
+
+    if (CoeffMatrix == NULL || TheorSlope == NULL || B == NULL) {
+        fprintf(
+            stderr,
+            "(Error) >> Cannot allocate memory. \nCoeffMatrix: %p; TheorSlope: "
+            "%p, B: %p\n",
+            CoeffMatrix, TheorSlope, B);
         exit(-1);
     }
 
     GridDef(x0, x1, y0, y1, N, TheorSlope);
-
     EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
+    GridDef(x0, x1, y0, y1, N, TheorSlope);
 
     rc = LinEquSolve(CoeffMatrix, LA, B);
     if (rc != 0)
@@ -538,6 +535,7 @@ void gpuFieldDistribution() {
     */
     double *CoeffMatrix, *B;
     double x0, y0, x1, y1;
+    double t0, t1;
 
     int M, Mm1, N, Nm1, LA;
     int i, rc;
@@ -588,7 +586,14 @@ void gpuFieldDistribution() {
     gpuEqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
     cudaDeviceSynchronize();
 
-    gpuLinEquSolve(CoeffMatrix, LA, B);
+    // gpuLinEquSolve(CoeffMatrix, LA, B);
+    t0 = second();
+    rc = LinEquSolve_ACC(CoeffMatrix, LA, B);
+    t1 = second();
+    fprintf(stdout, "\t>> LinEquSolve took %lf seconds\n", (t1 - t0));
+
+    if (rc != 0)
+        exit(-1); // TODO
     cudaDeviceSynchronize();
 
     cudaMemcpy(&TheorSlope[2 * TSlopeLength], B, sizeof(double) * LA, cudaMemcpyDeviceToDevice);
@@ -735,7 +740,8 @@ void FieldInit() {
         fprintf(stderr, "(Error@FieldInit) >> Cannot allocate FieldValues[%d,%d,2]\n", Xdots, Ydots);
         exit(-1);
     }
-    SetDoubleValue(FieldValues, Xdots * Ydots * 2, (double)0); // OPP: you can use calloc?
+    SetDoubleValue(FieldValues, Xdots * Ydots * 2,
+                   (double)0); // OPP: you can use calloc?
 
     /* Allocate DiffValues */
     DiffValues = (double *)malloc(sizeof(double) * NumInputValues);
@@ -743,7 +749,8 @@ void FieldInit() {
         fprintf(stderr, "(Error@FieldInit) >> Cannot allocate DiffValues[%d]\n", NumInputValues);
         exit(-1);
     }
-    SetDoubleValue(DiffValues, NumInputValues, (double)0.0); // OPP: you can use calloc?
+    SetDoubleValue(DiffValues, NumInputValues,
+                   (double)0.0); // OPP: you can use calloc?
 
     /* Compute discrepancy between Measured and Theoretical value */
     DiscrValue = 0.0;
@@ -751,7 +758,8 @@ void FieldInit() {
         xc = MeasuredValues[index2D(rv, 0, NumInputValues)];
         yc = MeasuredValues[index2D(rv, 1, NumInputValues)];
 
-        // TheorSlope is computed on the basis of a coarser grid, so look for the best values near xc, yc coordinates
+        // TheorSlope is computed on the basis of a coarser grid, so look for the
+        // best values near xc, yc coordinates
         sv = NearestValue(xc, yc, TSlopeLength, TheorSlope);
         ev = MeasuredValues[index2D(rv, 2, NumInputValues)];
 
@@ -767,7 +775,11 @@ void FieldInit() {
     sd = sqrt(sd / (double)NumInputValues);
 
     // Print statistics
-    fprintf(stdout, "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, %12.3e\n", NumInputValues, DiscrValue, sd);
+    fprintf(
+        stdout,
+        "\t...Number of Points, Mean value, Standard deviation = %d, %12.3e, "
+        "%12.3e\n",
+        NumInputValues, DiscrValue, sd);
 
     // Compute FieldValues stage 1
     FieldPoints(DiscrValue);
@@ -870,7 +882,8 @@ void Cooling(int steps) {
     iz = 1;
     for (it = 1; it <= steps; it++) {
         // Update the value of grid points
-        Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)], &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
+        Update(Xdots, Ydots, &FieldValues[index3D(0, 0, iz - 1, Xdots, Ydots)],
+               &FieldValues[index3D(0, 0, 2 - iz, Xdots, Ydots)]);
         iz = 3 - iz;
 
         // Print and show results
@@ -1029,7 +1042,10 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A
             // Find pos = position of P(x-dx,y)
             pos = np - Nm1;
             if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)) > Eps) {
-                fprintf(stderr, "(Error@EqsDef) >> x-dx: pos, np, d = %d %d %lf\n", pos, np, fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)));
+                fprintf(stderr,
+                        "(Error@EqsDef) >> x-dx: pos, np, d = %d %d %lf\n", pos,
+                        np,
+                        fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x - dx)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
@@ -1042,7 +1058,8 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A
             // Find pos = position of P(x+dx,y)
             pos = np + Nm1;
             if (fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)) > Eps) {
-                fprintf(stderr, "(Error@EqsDef) >> x+dx: %lf\n", fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)));
+                fprintf(stderr, "(Error@EqsDef) >> x+dx: %lf\n",
+                        fabs(Pts[index2D(pos, 0, TSlopeLength)] - (x + dx)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
@@ -1055,7 +1072,8 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A
             // Find pos = position of P(x,y-dy)
             pos = np - 1;
             if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)) > Eps) {
-                fprintf(stderr, "(Error@EqsDef) >> y-dy: %lf\n", fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)));
+                fprintf(stderr, "(Error@EqsDef) >> y-dy: %lf\n",
+                        fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y - dy)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
@@ -1068,7 +1086,8 @@ void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A
             // Find pos = position of P(x,y-dy)
             pos = np + 1;
             if (fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)) > Eps) {
-                fprintf(stderr, "(Error@EqsDef) >> y+dy: %lf\n", fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)));
+                fprintf(stderr, "(Error@EqsDef) >> y+dy: %lf\n",
+                        fabs(Pts[index2D(pos, 1, TSlopeLength)] - (y + dy)));
                 exit(-1);
             }
             A[index2D(np, pos, LA)] = 1.0;
@@ -1161,6 +1180,42 @@ double Solution(double x, double y) {
 
 __device__ double gpuSolution(double x, double y) {
     return ((x * x * x) + (y * y * y)) / (double)6.0;
+}
+
+/**
+ * result in d_b. d_A contains L matrix of LU factorization
+ */
+int LinEquSolve_ACC(double *d_A, // dense coefficient matrix (on device)
+                    int n,       // size (square)
+                    double *d_b) // A*x = b  (on device)
+{
+    cusolverDnHandle_t handle = NULL;
+    cudaStream_t stream = NULL;
+    int rowsA = n;      // number of rows of A
+    int colsA = n;      // number of columns of A
+    int lda = n;        // leading dimension in dense matrix
+    double *h_r = NULL; // r = b - A*x, copy of d_r
+
+    // double *d_x = NULL; // x = A \ h_b, saved in d_b
+    // double *d_r = NULL; // r = b - A*x
+
+    // cuSolver setup
+    checkCudaErrors(cusolverDnCreate(&handle));
+    checkCudaErrors(cudaStreamCreate(&stream));
+
+    // cublasHandle_t cublasHandle = NULL; // used in residual evaluation
+    // checkCudaErrors(cusolverDnSetStream(handle, stream));
+    // checkCudaErrors(cublasSetStream(cublasHandle, stream));
+
+    // allocate on device
+    // checkCudaErrors(cudaMalloc((void **)&d_r, sizeof(double) * rowsA));
+
+    // actually solve
+    linearSolverLU(handle, rowsA, d_A, lda, d_b);
+
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    return 0;
 }
 
 int LinEquSolve(double *a, int n, double *b) {
@@ -1427,8 +1482,7 @@ double NearestValue(double xc, double yc, int ld, double *Values) {
     int np;       // number of nearest points
     int i;
 
-    md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) +
-         ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
+    md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) + ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
 
     // Compute lowest distance
     for (i = 0; i < ld; i++) {
@@ -1816,7 +1870,8 @@ void RealData2ppm(int s1, int s2, double *rdata, double *vmin, double *vmax, cha
 
             vs++;
 
-            fprintf(ouni, " %3.3d %3.3d %3.3d", cm[0][vp], cm[1][vp], cm[2][vp]);
+            fprintf(ouni, " %3.3d %3.3d %3.3d", cm[0][vp], cm[1][vp],
+                    cm[2][vp]);
 
             if (vs >= 10) {
                 fprintf(ouni, " \n");
@@ -1860,7 +1915,10 @@ void Statistics(int s1, int s2, double *rdata, int step) {
     }
     sd = sqrt(sd / (double)(s1 * s2));
 
-    fprintf(stdout, ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n", step, mnv, mv, mxv, sd);
+    fprintf(
+        stdout,
+        ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n",
+        step, mnv, mv, mxv, sd);
 
     return;
 }
@@ -2130,4 +2188,35 @@ __global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, do
         u2[index2D(i, 0, xdots)] = u2[index2D(i, 1, xdots)];
         u2[index2D(i, Ydots - 1, xdots)] = u2[index2D(i, Ydots - 2, xdots)];
     }
+}
+/* CHECK CORRECT RESULTS */
+int checkACCLinEquSolve(double *h_A, double *h_b,
+                        int n // size
+) {
+    double *result_seq = h_b;
+    double *result_acc = NULL;
+    int rc;
+    double ninf = -1;
+
+    result_acc = (double *)malloc(sizeof(double) * n);
+    memcpy(result_acc, h_b, sizeof(double) * n);
+
+    rc = LinEquSolve_ACC(h_A, n, result_acc);
+    if (rc != 0)
+        exit(EXIT_FAILURE);
+    fprintf(stdout, "\t>> LinEquSolve_CUDA completed");
+    rc = LinEquSolve(h_A, n, result_seq);
+    if (rc != 0)
+        exit(EXIT_FAILURE);
+    fprintf(stdout, "\t>> LinEquSolve completed");
+
+    for (int i = 0; i < n; i++) {
+        result_seq[i] -= result_acc[i];
+    }
+    for (int i = 0; i < n; i++)
+        ninf = max(ninf, abs(result_seq[i]));
+
+    printf(
+        "---------maximum difference between solutions is %f. Good enough?\n",
+        ninf);
 }
