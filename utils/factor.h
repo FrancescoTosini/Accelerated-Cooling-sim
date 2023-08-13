@@ -7,7 +7,7 @@
  *  solve A*x = b by LU with partial pivoting
  *  result is left in d_b
  */
-int linearSolverLU(
+inline int linearSolverLU(
     cusolverDnHandle_t handle,
     int n,
     double *A,

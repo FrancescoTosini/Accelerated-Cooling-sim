@@ -30,7 +30,7 @@ struct testOpts {
     int lda;                   // by switch -lda<int>
 };
 
-double vec_norminf(int n, const double *x) {
+inline double vec_norminf(int n, const double *x) {
     double norminf = 0;
     for (int j = 0; j < n; j++) {
         double x_abs = fabs(x[j]);
@@ -42,7 +42,7 @@ double vec_norminf(int n, const double *x) {
 /*
  * |A| = max { |A|*ones(m,1) }
  */
-double mat_norminf(int m, int n, const double *A, int lda) {
+inline double mat_norminf(int m, int n, const double *A, int lda) {
     double norminf = 0;
     for (int i = 0; i < m; i++) {
         double sum = 0.0;
@@ -58,9 +58,9 @@ double mat_norminf(int m, int n, const double *A, int lda) {
 /*
  * |A| = max { |A|*ones(m,1) }
  */
-double csr_mat_norminf(int m, int n, int nnzA, const cusparseMatDescr_t descrA,
-                       const double *csrValA, const int *csrRowPtrA,
-                       const int *csrColIndA) {
+inline double csr_mat_norminf(int m, int n, int nnzA, const cusparseMatDescr_t descrA,
+                              const double *csrValA, const int *csrRowPtrA,
+                              const int *csrColIndA) {
     const int baseA =
         (CUSPARSE_INDEX_BASE_ONE == cusparseGetMatIndexBase(descrA)) ? 1 : 0;
 
@@ -79,9 +79,9 @@ double csr_mat_norminf(int m, int n, int nnzA, const cusparseMatDescr_t descrA,
     return norminf;
 }
 
-void display_matrix(int m, int n, int nnzA, const cusparseMatDescr_t descrA,
-                    const double *csrValA, const int *csrRowPtrA,
-                    const int *csrColIndA) {
+inline void display_matrix(int m, int n, int nnzA, const cusparseMatDescr_t descrA,
+                           const double *csrValA, const int *csrRowPtrA,
+                           const int *csrColIndA) {
     const int baseA =
         (CUSPARSE_INDEX_BASE_ONE == cusparseGetMatIndexBase(descrA)) ? 1 : 0;
 
@@ -103,7 +103,7 @@ void display_matrix(int m, int n, int nnzA, const cusparseMatDescr_t descrA,
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-double second(void) {
+inline double second(void) {
     LARGE_INTEGER t;
     static double oofreq;
     static int checkedForHighResTimer;
@@ -127,7 +127,7 @@ double second(void) {
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
-double second(void) {
+inline double second(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
@@ -139,7 +139,7 @@ double second(void) {
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/types.h>
-double second(void) {
+inline double second(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
