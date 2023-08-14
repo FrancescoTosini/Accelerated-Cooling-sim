@@ -4,7 +4,16 @@
 # architecture
 HOST_ARCH   := $(shell uname -m)
 TARGET_ARCH ?= $(HOST_ARCH)
+ifneq (,$(filter $(TARGET_ARCH),x86_64 aarch64 ppc64le))
+    TARGET_SIZE := 64
+else ifeq ($(TARGET_ARCH),armv7l)
+    TARGET_SIZE := 32
+else
+    $(error ERROR - unsupported value $(TARGET_ARCH) for TARGET_ARCH!)
+endif
 
+G_ARCH := 70
+LOC_ARCH := 50
 
 # operating system
 HOST_OS   := $(shell uname -s 2>/dev/null | tr "[:upper:]" "[:lower:]")
@@ -46,7 +55,8 @@ else ifneq ($(TARGET_ARCH),$(HOST_ARCH))
 	endif
 endif
 HOST_COMPILER ?= g++
-NVCC          := $(CUDA_PATH)/bin/nvcc -ccbin $(HOST_COMPILER)
+NVCC          := nvcc -ccbin $(HOST_COMPILER)
+# NVCCFLAGS     := -m${TARGET_SIZE}
 
 # Debug build flags
 ifeq ($(dbg),1)
@@ -119,6 +129,7 @@ $(BUILD_DIR)/%.o : %.cu
     # The -MMD flags creates a .d file with the same name as the .o file.
     # The rdc enables relocatable device code (to have global vars defined in headers)
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -MMD -c $< -o $@ 
+    # -rdc=true it slows down code execution seriously!
 
 .PHONY : clean	
 

@@ -12,13 +12,13 @@
 #include "util.cuh"
 
 // Global GPU variables
-extern __device__ int maxRow, maxCol;
-extern __device__ double temp;
-extern __device__ double globalV;
-extern __device__ double rMax;
-extern __device__ double rMin;
-extern __device__ double rMean;
-extern __device__ double rStd;
+// extern __device__ int maxRow, maxCol;
+// extern __device__ double temp;
+// extern __device__ double globalV;
+// extern __device__ double rMax;
+// extern __device__ double rMin;
+// extern __device__ double rMean;
+// extern __device__ double rStd;
 
 // Parameters to compute point sensitiveness - values read from input file
 extern double Sreal, Simag, Rreal, Rimag;

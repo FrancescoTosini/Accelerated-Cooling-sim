@@ -1041,3 +1041,169 @@ __global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, do
         u2[index2D(i, Ydots - 1, xdots)] = u2[index2D(i, Ydots - 2, xdots)];
     }
 }
+
+void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step) {
+    double mnv, mv, mxv, sd;
+
+    double *tmpMin;
+    double *tmpMax;
+    double *tmpMean;
+    double *tmpStd;
+
+    cudaError_t err;
+
+    int reduceLayer = (s1 * s2 + 1) / 2;
+
+    tmpMin = tmp;
+    tmpMax = &tmpMin[reduceLayer];
+    tmpMean = &tmpMax[reduceLayer];
+    tmpStd = &tmpMean[reduceLayer];
+
+    gpuStatisticsKernel<<<256, 128>>>(tmpMin, tmpMax, tmpMean, tmpStd, rdata, s1 * s2, reduceLayer);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    cudaMemcpyFromSymbol(&mnv, rMin, sizeof(double), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&mv, rMean, sizeof(double), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&mxv, rMax, sizeof(double), 0, cudaMemcpyDeviceToHost);
+    cudaMemcpyFromSymbol(&sd, rStd, sizeof(double), 0, cudaMemcpyDeviceToHost);
+
+    fprintf(stdout, ">> Step %4d: min, mean, max, std = %12.3e, %12.3e, %12.3e, %12.3e\n", step, mnv, mv, mxv, sd);
+
+    return;
+}
+
+__global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer) {
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+
+    int i;
+    double a, b;
+    int layerLength = reduceLayer;
+
+    int last;
+
+    for (i = id; i < layerLength; i += stride) {
+        if ((2 * i + 1) < len) {
+            a = Values[2 * i];
+            b = Values[2 * i + 1];
+
+            tmpMin[i] = (a < b) ? a : b;
+            tmpMax[i] = (a > b) ? a : b;
+            tmpMean[i] = a + b;
+        } else {
+            tmpMin[i] = Values[2 * i];
+            tmpMax[i] = Values[2 * i];
+            tmpMean[i] = Values[2 * i];
+        }
+    }
+
+    last = layerLength % 2;
+    layerLength = (layerLength + 1) / 2;
+
+    __syncthreads();
+
+    while (layerLength > 1) {
+        for (i = id; i < layerLength; i += stride) {
+            if (i < layerLength - last) {
+                a = tmpMin[2 * i];
+                b = tmpMin[2 * i + 1];
+                tmpMin[2 * i] = (a < b) ? a : b;
+
+                a = tmpMax[2 * i];
+                b = tmpMax[2 * i + 1];
+                tmpMax[2 * i] = (a > b) ? a : b;
+
+                a = tmpMean[2 * i];
+                b = tmpMean[2 * i + 1];
+                tmpMean[2 * i] = a + b;
+            }
+        }
+
+        __syncthreads();
+
+        for (i = id; i < layerLength; i += stride) {
+            tmpMin[i] = tmpMin[2 * i];
+            tmpMax[i] = tmpMax[2 * i];
+            tmpMean[i] = tmpMean[2 * i];
+        }
+
+        last = layerLength % 2;
+        layerLength = (layerLength + 1) / 2;
+
+        __syncthreads();
+    }
+
+    if (id == 0) {
+        a = tmpMin[0];
+        b = tmpMin[1];
+        rMin = (a < b) ? a : b;
+
+        a = tmpMax[0];
+        b = tmpMax[1];
+        rMax = (a > b) ? a : b;
+
+        a = tmpMean[0];
+        b = tmpMean[1];
+        rMean = (a + b) / (double)len;
+    }
+
+    __syncthreads();
+
+    // Compute STD
+
+    double mv = rMean;
+
+    layerLength = reduceLayer;
+
+    for (i = id; i < layerLength; i += stride) {
+        if ((2 * i + 1) < len) {
+            a = Values[2 * i];
+            b = Values[2 * i + 1];
+
+            a = (a - mv) * (a - mv);
+            b = (b - mv) * (b - mv);
+
+            tmpStd[i] = a + b;
+        } else {
+            a = Values[2 * i];
+            a = (a - mv) * (a - mv);
+
+            tmpStd[i] = a;
+        }
+    }
+
+    last = layerLength % 2;
+    layerLength = (layerLength + 1) / 2;
+
+    __syncthreads();
+
+    while (layerLength > 1) {
+        for (i = id; i < layerLength; i += stride) {
+            if (i < layerLength - last) {
+                a = tmpStd[2 * i];
+                b = tmpStd[2 * i + 1];
+                tmpStd[2 * i] = a + b;
+            }
+        }
+
+        __syncthreads();
+
+        for (i = id; i < layerLength; i += stride)
+            tmpStd[i] = tmpStd[2 * i];
+
+        last = layerLength % 2;
+        layerLength = (layerLength + 1) / 2;
+
+        __syncthreads();
+    }
+
+    if (id == 0) {
+        rStd = sqrt((tmpStd[0] + tmpStd[1]) / (double)len);
+    }
+}

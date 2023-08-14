@@ -1,7 +1,7 @@
 #ifndef UTIL
 #define UTIL
 
-#include "parallel.cuh"
+// #include "parallel.cuh"
 #include <stdio.h>
 #include <string.h>
 
