@@ -1,5 +1,5 @@
 # Location of the CUDA Toolkit
-CUDA_PATH?=/opt/cuda
+# CUDA_PATH?=/opt/cuda
 
 # architecture
 HOST_ARCH   := $(shell uname -m)
@@ -84,17 +84,16 @@ DEP = $(OBJ:%.o=%.d)
 # extra headers
 INCLUDES  := -I./utils
 
-################################################################################
-
-# Generate PTX code from the highest SM architecture in $(SMS) to guarantee forward-compatibility
-HIGHEST_SM := $(lastword $(sort $(SMS)))
-ifneq ($(HIGHEST_SM),)
-GENCODE_FLAGS += -gencode arch=compute_$(HIGHEST_SM),code=compute_$(HIGHEST_SM)
+# where are we?
+ifdef SCRATCH
+    # compiling for galileo...
+	GENCODE_FLAGS += -gencode arch=compute_$(G_ARCH),code=sm_$(G_ARCH)
+else
+    # compiling for local...
+	GENCODE_FLAGS += -gencode arch=compute_$(LOC_ARCH),code=sm_$(LOC_ARCH)
 endif
 
 LIBRARIES += -lcusolver -lcublas -lcusparse
-
-################################################################################
 
 # Target rules
 all: $(BIN)
@@ -119,7 +118,7 @@ $(BUILD_DIR)/%.o : %.cu
 	mkdir -p $(@D)
     # The -MMD flags creates a .d file with the same name as the .o file.
     # The rdc enables relocatable device code (to have global vars defined in headers)
-	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -MMD -c $< -o $@ --gpu-architecture=compute_50 --gpu-code=compute_50,sm_52 -rdc=true 
+	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -MMD -c $< -o $@ 
 
 .PHONY : clean	
 

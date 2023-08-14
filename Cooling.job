@@ -5,24 +5,26 @@
 #SBATCH --gres=gpu:1          # 1 gpu per node (max 4)
 #SBATCH --time=1:00:00        # max 24:00:00
 #SBATCH --mem=14GB            # memory/node (max 246GB)
-#SBATCH -A tra22_PoliMI
-#SBATCH -p m100_sys_test
-#SBATCH -q qos_test
-#SBATCH --job-name=myJob             # job_name
+#SBATCH -A tra23_polimi_e
+#SBATCH -p g100_usr_interactive
+#SBATCH -q noQOS # i don't think we need this but... that should be it
+#SBATCH --job-name=cooling_polimi_2023_MT             # job_name
 #SBATCH --error=errjobfile-%J.err    # stderr file
 #SBATCH --output=outjobfile-%J.out   # stdout file
 cd $SLURM_SUBMIT_DIR
 echo "Job started at " `date`
-module load gnu
-rm -f Cooling.exe
-gcc -pg -o Cooling.exe -O3 Cooling.c  -lm
-rm -f FieldValues0???.ppm FieldValues0???.jpg
-./Cooling.exe >& Cooling_c.log
+module load nvhpc
+module load cuda
+rm -f build/cooling
+make
+make run >& "cooling_`date`.log" # have not tested string interpolation!
+# ./Cooling.exe >& Cooling_c.log
+# rm -f FieldValues0???.ppm FieldValues0???.jpg
 wait
-rm -f Cooling.exe
-gfortran -pg -o Cooling.exe -O3 Cooling.f90  -lm
-rm -f FieldValues0???.ppm FieldValues0???.jpg
-./Cooling.exe >& Cooling_f90.log
-wait
+# rm -f Cooling.exe
+# gfortran -pg -o Cooling.exe -O3 Cooling.f90  -lm
+# rm -f FieldValues0???.ppm FieldValues0???.jpg
+# ./Cooling.exe >& Cooling_f90.log
+# wait
 echo "Job finished at " `date`
 exit
