@@ -1,0 +1,10 @@
+openblas/cublas?
+netlib-lapack/cublas?
+nvhpc
+cuda (LAST!)
+
+salloc -N 1 -A tra23_polimi_e --gres=gpu:1 -p g100_usr_interactive
+
+worked:
+module load nvhpc
+module load cuda
