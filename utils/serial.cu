@@ -134,7 +134,7 @@ void InitGrid(char *InputFile) {
     return;
 }
 
-void FieldDistribution() {
+double *FieldDistribution() {
     /*
     !  Compute theoretical value distribution of the perturbing field
     !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution
@@ -179,7 +179,7 @@ void FieldDistribution() {
 
     GridDef(x0, x1, y0, y1, N, TheorSlope);
     EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
-    //GridDef(x0, x1, y0, y1, N, TheorSlope);
+    // GridDef(x0, x1, y0, y1, N, TheorSlope);
 
     rc = LinEquSolve(CoeffMatrix, LA, B);
     if (rc != 0)
@@ -189,9 +189,96 @@ void FieldDistribution() {
         TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
 
     free(CoeffMatrix);
-    free(B);
+    // free(B);
 
-    return;
+    return B;
+}
+
+double *FieldDistribution_mixed() {
+    /*
+    !  Compute theoretical value distribution of the perturbing field
+    !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution
+    function
+    */
+    double *CoeffMatrix, *B;
+    double x0, y0, x1, y1;
+    double t0, t1;
+
+    int M, Mm1, N, Nm1, LA;
+    int i, rc;
+
+    fprintf(stdout, "\t>> Computing theoretical perturbing field...\n");
+
+    x0 = Sreal;
+    y0 = Simag;
+    x1 = x0 + Rreal;
+    y1 = y0 + Rimag;
+
+    // How many intervals? It should be safe to use SQRT(Xdots)
+    M = sqrt((double)Xdots);
+    N = sqrt((double)Ydots);
+
+    Nm1 = N - 1; // Grid points minus boundary
+    Mm1 = M - 1; // Grid points minus boundary
+
+    LA = Mm1 * Nm1; // unknown points
+    TSlopeLength = LA;
+
+    CoeffMatrix = (double *)malloc(sizeof(double) * LA * LA);
+    TheorSlope = (double *)malloc(sizeof(double) * TSlopeLength * 3);
+    B = (double *)malloc(sizeof(double) * LA);
+
+    if (CoeffMatrix == NULL || TheorSlope == NULL || B == NULL) {
+        fprintf(
+            stderr,
+            "(Error) >> Cannot allocate memory. \nCoeffMatrix: %p; TheorSlope: "
+            "%p, B: %p\n",
+            CoeffMatrix, TheorSlope, B);
+        exit(-1);
+    }
+
+    GridDef(x0, x1, y0, y1, N, TheorSlope);
+    EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
+
+    double *result_seq = B;
+    double *result_acc = NULL;
+    result_acc = (double *)malloc(sizeof(double) * LA);
+    memcpy(result_acc, B, sizeof(double) * LA);
+
+    t0 = clock();
+    double *d_A, *d_b;
+    cudaMalloc(&d_A, sizeof(double) * LA * LA);
+    cudaMemcpy(d_A, CoeffMatrix, sizeof(double) * LA * LA, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_b, sizeof(double) * LA);
+    cudaMemcpy(d_b, B, sizeof(double) * LA, cudaMemcpyHostToDevice);
+    cudaDeviceSynchronize();
+    rc = LinEquSolve_ACC(d_A, LA, d_b);
+    t1 = clock();
+    cudaMemcpy(result_acc, d_b, sizeof(double) * LA, cudaMemcpyDeviceToHost);
+    fprintf(stdout, "\t>> LinEquSolve_CUDA took %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
+    t0 = clock();
+    rc = LinEquSolve(CoeffMatrix, LA, result_seq);
+    t1 = clock();
+    fprintf(stdout, "\t>> LinEquSolve_seq took %lf seconds\n", (double)(t1 - t0) / CLOCKS_PER_SEC);
+
+    for (i = 0; i < LA; i++) {
+        result_seq[i] -= result_acc[i];
+    }
+    double ninf = -1;
+    for (i = 0; i < LA; i++)
+        ninf = max(ninf, abs(result_seq[i]));
+
+    printf("---------maximum difference between solutions is %f. Good enough?\n", ninf);
+    if (rc != 0)
+        exit(-1);
+
+    for (i = 0; i < LA; i++)
+        TheorSlope[index2D(i, 2, TSlopeLength)] = B[i]; // OPP: why not use memcpy?
+
+    free(CoeffMatrix);
+    // free(B);
+
+    return B;
 }
 
 void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {

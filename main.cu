@@ -7,8 +7,8 @@
 #include "device_functions.h"
 #include "device_launch_parameters.h"
 
-#include <cusolverDn.h>
 #include <cublas_v2.h>
+#include <cusolverDn.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,32 +19,32 @@
 #include "utils/parallel.cuh"
 #include "utils/serial.h"
 
-//undef ACCELERATED
+// undef ACCELERATED
 
 // For Testing Purposes
 
-void getGpuPointers(int** gpuFieldWeight, double** gpuFieldCoord, double** gpuTheorSlope, double** gpuFieldValues) {
+void getGpuPointers(int **gpuFieldWeight, double **gpuFieldCoord, double **gpuTheorSlope, double **gpuFieldValues) {
     *gpuFieldWeight = FieldWeight;
     *gpuFieldCoord = FieldCoord;
     *gpuTheorSlope = TheorSlope;
     *gpuFieldValues = FieldValues;
 }
 
-void getCpuPointers(int** cpuFieldWeight, double** cpuFieldCoord, double** cpuTheorSlope, double** cpuFieldValues) {
+void getCpuPointers(int **cpuFieldWeight, double **cpuFieldCoord, double **cpuTheorSlope, double **cpuFieldValues) {
     *cpuFieldWeight = FieldWeight;
     *cpuFieldCoord = FieldCoord;
     *cpuTheorSlope = TheorSlope;
     *cpuFieldValues = FieldValues;
 }
 
-void setGpuPointers(int* gpuFieldWeight, double* gpuFieldCoord, double* gpuTheorSlope, double* gpuFieldValues) {
+void setGpuPointers(int *gpuFieldWeight, double *gpuFieldCoord, double *gpuTheorSlope, double *gpuFieldValues) {
     FieldWeight = gpuFieldWeight;
     FieldCoord = gpuFieldCoord;
     TheorSlope = gpuTheorSlope;
     FieldValues = gpuFieldValues;
 }
 
-void setCpuPointers(int* cpuFieldWeight, double* cpuFieldCoord, double* cpuTheorSlope, double* cpuFieldValues) {
+void setCpuPointers(int *cpuFieldWeight, double *cpuFieldCoord, double *cpuTheorSlope, double *cpuFieldValues) {
     FieldWeight = cpuFieldWeight;
     FieldCoord = cpuFieldCoord;
     TheorSlope = cpuTheorSlope;
@@ -55,20 +55,20 @@ int test() {
 
     int i, correct;
 
-    int* cpuFieldWeight;
-    double* cpuFieldCoord;
-    double* cpuTheorSlope;
-    double* cpuFieldValues;
+    int *cpuFieldWeight;
+    double *cpuFieldCoord;
+    double *cpuTheorSlope;
+    double *cpuFieldValues;
 
-    int* gpuFieldWeight;
-    double* gpuFieldCoord;
-    double* gpuTheorSlope;
-    double* gpuFieldValues;
+    int *gpuFieldWeight;
+    double *gpuFieldCoord;
+    double *gpuTheorSlope;
+    double *gpuFieldValues;
 
-    int* tmpFieldWeight;
-    double* tmpFieldCoord;
-    double* tmpTheorSlope;
-    double* tmpFieldValues;
+    int *tmpFieldWeight;
+    double *tmpFieldCoord;
+    double *tmpTheorSlope;
+    double *tmpFieldValues;
 
     // Check correctness against CPU
     printf("\tTEST SESSION\n");
@@ -83,22 +83,31 @@ int test() {
     printf(">> Checking correctness against CPU... initialization completed.\n");
 
     setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
-    gpuFieldDistribution();
+    double *result_acc = FieldDistribution_mixed();
     getGpuPointers(&gpuFieldWeight, &gpuFieldCoord, &gpuTheorSlope, &gpuFieldValues);
 
     setCpuPointers(cpuFieldWeight, cpuFieldCoord, cpuTheorSlope, cpuFieldValues);
-    FieldDistribution();
+    double *result_seq = FieldDistribution();
     getCpuPointers(&cpuFieldWeight, &cpuFieldCoord, &cpuTheorSlope, &cpuFieldValues);
 
     printf(">> Checking correctness against CPU... do FieldDistribution match?\n");
 
-    tmpTheorSlope = (double*)malloc(sizeof(double) * TSlopeLength);
+    tmpTheorSlope = (double *)malloc(sizeof(double) * TSlopeLength);
     cudaMemcpy(tmpTheorSlope, &gpuTheorSlope[index2D(0, 2, TSlopeLength)], sizeof(double) * TSlopeLength, cudaMemcpyDeviceToHost);
 
+    for (i = 0; i < TSlopeLength; i++) {
+        result_seq[i] -= result_acc[i];
+    }
+    double ninf = -1;
+    for (i = 0; i < TSlopeLength; i++)
+        ninf = max(ninf, abs(result_seq[i]));
+
+    printf("---------maximum difference between solutions is %f. Good enough?\n", ninf);
     correct = TSlopeLength;
 
     for (i = 0; i < TSlopeLength; i++) {
-        if (cpuTheorSlope[index2D(i, 2, TSlopeLength)] != tmpTheorSlope[i]) correct--;
+        if (cpuTheorSlope[index2D(i, 2, TSlopeLength)] != tmpTheorSlope[i])
+            correct--;
     }
 
     free(tmpTheorSlope);
@@ -108,10 +117,9 @@ int test() {
     setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
     cudaMemcpy(gpuTheorSlope, cpuTheorSlope, sizeof(double) * TSlopeLength * 3, cudaMemcpyHostToDevice);
 
-
     printf(">> Checking correctness against CPU... do SensiblePoints match?\n");
 
-    //setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
+    // setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
     gpuSensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
     getGpuPointers(&gpuFieldWeight, &gpuFieldCoord, &gpuTheorSlope, &gpuFieldValues);
 
@@ -119,16 +127,17 @@ int test() {
     SensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
     getCpuPointers(&cpuFieldWeight, &cpuFieldCoord, &cpuTheorSlope, &cpuFieldValues);
 
-    tmpFieldWeight = (int*)malloc(sizeof(int) * Xdots * Ydots);
+    tmpFieldWeight = (int *)malloc(sizeof(int) * Xdots * Ydots);
     cudaMemcpy(tmpFieldWeight, gpuFieldWeight, sizeof(int) * Xdots * Ydots, cudaMemcpyDeviceToHost);
 
-    tmpFieldCoord = (double*)malloc(sizeof(double) * Xdots * Ydots * 2);
+    tmpFieldCoord = (double *)malloc(sizeof(double) * Xdots * Ydots * 2);
     cudaMemcpy(tmpFieldCoord, gpuFieldCoord, sizeof(double) * Xdots * Ydots * 2, cudaMemcpyDeviceToHost);
 
     correct = Xdots * Ydots;
 
     for (i = 0; i < Xdots * Ydots; i++) {
-        if (fabs(cpuFieldWeight[i] - tmpFieldWeight[i]) > 0.001) correct--;
+        if (fabs(cpuFieldWeight[i] - tmpFieldWeight[i]) > 0.001)
+            correct--;
     }
 
     printf("\t%.2f %% of values in FieldWeight do actually coincide...\n", (float)correct * 100 / (Xdots * Ydots));
@@ -136,14 +145,14 @@ int test() {
     correct = Xdots * Ydots * 2;
 
     for (i = 0; i < Xdots * Ydots * 2; i++) {
-        if (cpuFieldCoord[i] != tmpFieldCoord[i]) correct--;
+        if (cpuFieldCoord[i] != tmpFieldCoord[i])
+            correct--;
     }
 
     printf("\t%.2f %% of values in FieldCoord do actually coincide...\n\n", (float)correct * 100 / (Xdots * Ydots * 2));
 
     free(tmpFieldWeight);
     free(tmpFieldCoord);
-
 
     printf(">> Checking correctness against CPU... do FieldInit match?\n");
 
@@ -155,18 +164,17 @@ int test() {
     FieldInit();
     getCpuPointers(&cpuFieldWeight, &cpuFieldCoord, &cpuTheorSlope, &cpuFieldValues);
 
-    tmpFieldValues = (double*)malloc(sizeof(double) * Xdots * Ydots * 2);
+    tmpFieldValues = (double *)malloc(sizeof(double) * Xdots * Ydots * 2);
     cudaMemcpy(tmpFieldValues, gpuFieldValues, sizeof(double) * Xdots * Ydots * 2, cudaMemcpyDeviceToHost);
 
     correct = Xdots * Ydots * 2;
 
     for (i = 0; i < Xdots * Ydots * 2; i++) {
-        if (fabs(cpuFieldValues[i] - tmpFieldValues[i]) > 0.001) correct--;
+        if (fabs(cpuFieldValues[i] - tmpFieldValues[i]) > 0.001)
+            correct--;
     }
 
     printf("\n\t%.2f %% of values in FieldValues do actually coincide...\n\n", (float)correct * 100 / (Xdots * Ydots * 2));
-
-
 
     printf(">> Checking correctness against CPU... do Cooling match?\n");
 
@@ -183,7 +191,8 @@ int test() {
     correct = Xdots * Ydots * 2;
 
     for (i = 0; i < Xdots * Ydots * 2; i++) {
-        if (fabs(cpuFieldValues[i] - tmpFieldValues[i]) > 0.001) correct--;
+        if (fabs(cpuFieldValues[i] - tmpFieldValues[i]) > 0.001)
+            correct--;
     }
 
     printf("\n\t%.2f %% of values in FieldValues do actually coincide...\n\n", (float)correct * 100 / (Xdots * Ydots * 2));
@@ -207,14 +216,10 @@ int test() {
     return 0;
 }
 
-
-
-
 int main(int argc, char *argv[]) {
 
-    /*test();
-    return 0;*/
-
+    test();
+    return 0;
 
     clock_t t0, t1, p0, p1;
 

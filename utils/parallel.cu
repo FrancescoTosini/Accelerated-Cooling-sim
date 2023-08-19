@@ -188,7 +188,6 @@ void gpuGridDef(double x0, double x1, double y0, double y1, int N, double *Pts) 
     dx = (x1 - x0) / (double)N;
     dy = (y1 - y0) / (double)N;
 
-
     gpuGridDefKernel<<<6, 128>>>(x0, y0, dx, dy, Pts, Nm1, Nm1 * Mm1, TSlopeLength);
 
     return;
@@ -312,7 +311,7 @@ int LinEquSolve_ACC(double *d_A, // dense coefficient matrix (on device)
     return 0;
 }
 
-void gpuFieldDistribution() {
+double *gpuFieldDistribution() {
     /*
     !  Compute theoretical value distribution of the perturbing field
     !  Output: TheorSlope(TSlopeLength,3) - theoretical field distribution function
@@ -373,7 +372,7 @@ void gpuFieldDistribution() {
     // gpuLinEquSolve(CoeffMatrix, LA, B);
     t0 = second();
     rc = LinEquSolve_ACC(CoeffMatrix, LA, B);
-    //rc = gpuLinEquSolve(CoeffMatrix, LA, B);
+    // rc = gpuLinEquSolve(CoeffMatrix, LA, B);
     t1 = second();
     fprintf(stdout, "\t>> LinEquSolve took %lf seconds\n", (t1 - t0));
 
@@ -384,13 +383,16 @@ void gpuFieldDistribution() {
     cudaMemcpy(&TheorSlope[2 * TSlopeLength], B, sizeof(double) * LA, cudaMemcpyDeviceToDevice);
 
     cudaFree(CoeffMatrix);
+    double *CPU_B = (double *)malloc(sizeof(double) * LA);
+    cudaMemcpy(CPU_B, B, sizeof(double) * LA, cudaMemcpyDeviceToHost);
     cudaFree(B);
+    cudaDeviceSynchronize();
 
-    return;
+    return CPU_B;
 }
 
 __global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double *FieldCoord, int *FieldWeight) {
-    
+
     double ca, cb, za, zb;
     double rad, zan, zbn;
 
@@ -417,7 +419,8 @@ __global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, doubl
 
             for (iz = 1; iz <= MaxIt; iz++) {
 
-                if (rad > (double)4.0) break;
+                if (rad > (double)4.0)
+                    break;
 
                 za = zan;
                 zb = zbn;
@@ -785,7 +788,7 @@ double gpuNearestValue(double xc, double yc, int ld, double *Values) {
 }
 
 __global__ void gpuNearestValueKernel(double xc, double yc, double *Values, double *dist, int *mask, double *partialResult, int n) {
-    
+
     int i, j;
     double a, b, v;
     __shared__ int np;
@@ -813,22 +816,19 @@ __global__ void gpuNearestValueKernel(double xc, double yc, double *Values, doub
             b = dist[2 * i + 1];
 
             if (a < b) {
-                //dist[2 * i] = a;
+                // dist[2 * i] = a;
                 mask[2 * i] = 1;
                 partialResult[2 * i] = Values[index2D(2 * i, 2, n)];
-            }
-            else if (b < a) {
+            } else if (b < a) {
                 dist[2 * i] = b;
                 mask[2 * i] = 1;
                 partialResult[2 * i] = Values[index2D(2 * i + 1, 2, n)];
-            }
-            else {
-                //dist[2 * i] = a;
+            } else {
+                // dist[2 * i] = a;
                 mask[2 * i] = 2;
                 partialResult[2 * i] = Values[index2D(2 * i, 2, n)] + Values[index2D(2 * i + 1, 2, n)];
             }
-        }
-        else {
+        } else {
             mask[2 * i] = 1;
             partialResult[2 * i] = Values[index2D(2 * i, 2, n)];
         }
@@ -860,13 +860,11 @@ __global__ void gpuNearestValueKernel(double xc, double yc, double *Values, doub
                     dist[2 * i] = b;
                     mask[2 * i] = mask[2 * i + 1];
                     partialResult[2 * i] = partialResult[2 * i + 1];
-                }
-                else if (a == b) {
-                    //dist[2 * i] = a;
+                } else if (a == b) {
+                    // dist[2 * i] = a;
                     mask[2 * i] += mask[2 * i + 1];
                     partialResult[2 * i] += partialResult[2 * i + 1];
                 }
-
             }
         }
 
@@ -891,9 +889,12 @@ __global__ void gpuNearestValueKernel(double xc, double yc, double *Values, doub
         a = dist[0];
         b = dist[1];
 
-        if (a == b) globalV = (partialResult[0] + partialResult[1]) / (double)(mask[0] + mask[1]);
-        else if (a < b) globalV = partialResult[0] / (double)mask[0];
-        else if (b < a) globalV = partialResult[1] / (double)mask[1];
+        if (a == b)
+            globalV = (partialResult[0] + partialResult[1]) / (double)(mask[0] + mask[1]);
+        else if (a < b)
+            globalV = partialResult[0] / (double)mask[0];
+        else if (b < a)
+            globalV = partialResult[1] / (double)mask[1];
     }
 }
 
@@ -968,13 +969,11 @@ __global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMa
             if (a <= b) {
                 tmpMin[i] = a;
                 tmpMax[i] = b;
-            }
-            else {
+            } else {
                 tmpMin[i] = b;
                 tmpMax[i] = a;
             }
-        }
-        else {
+        } else {
             tmpMin[i] = a;
             tmpMax[i] = a;
         }
@@ -996,12 +995,14 @@ __global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMa
                 a = tmpMin[2 * i];
                 b = tmpMin[2 * i + 1];
 
-                if (b < a) tmpMin[2 * i] = b;
+                if (b < a)
+                    tmpMin[2 * i] = b;
 
                 a = tmpMax[2 * i];
                 b = tmpMax[2 * i + 1];
 
-                if (b > a) tmpMax[2 * i] = b;
+                if (b > a)
+                    tmpMax[2 * i] = b;
             }
         }
 
@@ -1034,7 +1035,6 @@ __global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMa
 
         printf("-----> iMin = %d, iMax = %d on GPU\n", iMin, iMax);
     }
-
 
     /*int i;
     double a, b;
@@ -1139,9 +1139,7 @@ __device__ double deviceNearestValue(double xc, double yc, int ld, double *Value
         if (d == md) {
             np++;
             v += Values[index2D(i, 2, ld)];
-        }
-        else if (d < md)
-        {
+        } else if (d < md) {
             md = d;
             np = 1;
             v = Values[index2D(i, 2, ld)];
@@ -1257,7 +1255,7 @@ void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step) {
     return;
 }
 
-__global__ void bulkReduce(double* tmpMin, double* tmpMax, double* tmpMean, double* Values, int len) {
+__global__ void bulkReduce(double *tmpMin, double *tmpMax, double *tmpMean, double *Values, int len) {
 
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
@@ -1283,14 +1281,16 @@ __global__ void bulkReduce(double* tmpMin, double* tmpMax, double* tmpMean, doub
 
         for (i = 1; i < jobShare; i++) {
 
-            if ((offset + i) >= len) break;
+            if ((offset + i) >= len)
+                break;
 
             a = Values[offset + i];
 
-            if (a < min) min = a;
-            if (a > max) max = a;
+            if (a < min)
+                min = a;
+            if (a > max)
+                max = a;
             mean += a;
-
         }
 
         tmpMin[id] = min;
@@ -1328,10 +1328,13 @@ __global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpM
 
         for (i = 1; i < jobShare; i++) {
 
-            if ((offset + i) >= reduceLayer) break;
+            if ((offset + i) >= reduceLayer)
+                break;
 
-            if (tmpMin[offset + i] < min) min = tmpMin[offset + i];
-            if (tmpMax[offset + i] > max) max = tmpMax[offset + i];
+            if (tmpMin[offset + i] < min)
+                min = tmpMin[offset + i];
+            if (tmpMax[offset + i] > max)
+                max = tmpMax[offset + i];
             mean += tmpMean[offset + i];
         }
 
@@ -1413,8 +1416,7 @@ __global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpM
             b = (b - mv) * (b - mv);
 
             tmpStd[i] = a + b;
-        }
-        else {
+        } else {
             a = Values[2 * i];
             a = (a - mv) * (a - mv);
 

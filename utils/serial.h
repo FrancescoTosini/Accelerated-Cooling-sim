@@ -27,7 +27,8 @@ int LinEquSolve_ACC(double *h_A, int n, double *h_b);
 void EqsDef(double x0, double x1, double y0, double y1, int N, int LA,
             double *A, double *Rhs, double *Pts);
 double Solution(double x, double y);
-void FieldDistribution();
+double *FieldDistribution();
+double *FieldDistribution_mixed();
 void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts);
 void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt);
 void FieldInit();

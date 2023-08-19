@@ -35,7 +35,7 @@ extern double *FieldCoord;     // 3-D array - X, Y coordinates in field
 extern double *FieldValues;    // 3-D array - X, Y coordinates in field
 
 void gpuInitGrid(char *InputFile);
-void gpuFieldDistribution();
+double *gpuFieldDistribution();
 void gpuGridDef(double x0, double x1, double y0, double y1, int N, double *Pts);
 __global__ void gpuGridDefKernel(double x0, double y0, double dx, double dy, double *Pts, int Nm1, int len, int TSlopeLength);
 void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts);
@@ -60,7 +60,7 @@ __device__ double deviceNearestValue(double xc, double yc, int ld, double *Value
 
 void gpuCooling(int steps);
 void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step);
-__global__ void bulkReduce(double* tmpMin, double* tmpMax, double* tmpMean, double* Values, int len);
+__global__ void bulkReduce(double *tmpMin, double *tmpMax, double *tmpMean, double *Values, int len);
 __global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer);
 void gpuUpdate(int xdots, int ydots, double *u1, double *u2);
 __global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, double CX, double CY, double dgx, double dgy);
