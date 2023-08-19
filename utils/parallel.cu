@@ -4,6 +4,8 @@
 __device__ int maxRow, maxCol;
 __device__ double temp;
 __device__ double globalV;
+__device__ int iMin;
+__device__ int iMax;
 __device__ double rMax;
 __device__ double rMin;
 __device__ double rMean;
@@ -186,6 +188,7 @@ void gpuGridDef(double x0, double x1, double y0, double y1, int N, double *Pts) 
     dx = (x1 - x0) / (double)N;
     dy = (y1 - y0) / (double)N;
 
+
     gpuGridDefKernel<<<6, 128>>>(x0, y0, dx, dy, Pts, Nm1, Nm1 * Mm1, TSlopeLength);
 
     return;
@@ -272,7 +275,8 @@ void gpuEqsDef(double x0, double x1, double y0, double y1, int N, int LA, double
 
     return;
 }
-/**
+
+/*
  * result in d_b. d_A contains L matrix of LU factorization
  */
 int LinEquSolve_ACC(double *d_A, // dense coefficient matrix (on device)
@@ -369,6 +373,7 @@ void gpuFieldDistribution() {
     // gpuLinEquSolve(CoeffMatrix, LA, B);
     t0 = second();
     rc = LinEquSolve_ACC(CoeffMatrix, LA, B);
+    //rc = gpuLinEquSolve(CoeffMatrix, LA, B);
     t1 = second();
     fprintf(stdout, "\t>> LinEquSolve took %lf seconds\n", (t1 - t0));
 
@@ -383,40 +388,46 @@ void gpuFieldDistribution() {
 
     return;
 }
+
 __global__ void gpuSensiblePointsKernel(double Ir, double Ii, double Xinc, double Yinc, int MaxIt, double *FieldCoord, int *FieldWeight) {
+    
     double ca, cb, za, zb;
     double rad, zan, zbn;
 
+    int ix, iy, iz;
+
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int idy = threadIdx.y + blockIdx.y * blockDim.y;
-    int idz = threadIdx.z + blockIdx.z * blockDim.z;
 
     int sizeX = gridDim.x * blockDim.x;
     int sizeY = gridDim.y * blockDim.y;
-    int sizeZ = gridDim.z * blockDim.z;
-
-    int ix, iy, iz;
 
     for (iy = idy; iy < Ydots; iy += sizeY) {
         for (ix = idx; ix < Xdots; ix += sizeX) {
+
             ca = Xinc * ix + Ir;
             cb = Yinc * iy + Ii;
             FieldCoord[index3D(ix, iy, 0, Xdots, Ydots)] = ca;
             FieldCoord[index3D(ix, iy, 1, Xdots, Ydots)] = cb;
-            rad = ca * ca * ((double)1.0 + (cb / ca) * (cb / ca));
+
+            rad = ca * ca + cb * cb;
+
             zan = 0.0;
             zbn = 0.0;
-            for (iz = idz; iz <= MaxIt; iz += sizeZ) {
-                if (iz == 0)
-                    break;
-                if (rad > (double)4.0)
-                    break;
+
+            for (iz = 1; iz <= MaxIt; iz++) {
+
+                if (rad > (double)4.0) break;
+
                 za = zan;
                 zb = zbn;
+
                 zan = ca + (za - zb) * (za + zb);
-                zbn = 2.0 * (za * zb + cb / 2.0);
-                rad = zan * zan * ((double)1.0 + (zbn / zan) * (zbn / zan));
+                zbn = 2.0 * za * zb + cb;
+
+                rad = zan * zan + zbn * zbn;
             }
+
             FieldWeight[index2D(ix, iy, Xdots)] = iz;
         }
     }
@@ -439,7 +450,7 @@ void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {
     Xinc = Sr / (double)Xdots;
     Yinc = Si / (double)Ydots;
 
-    gpuSensiblePointsKernel<<<dim3(8, 8, 4), dim3(8, 8, 2)>>>(Ir, Ii, Xinc, Yinc, MaxIt, FieldCoord, FieldWeight);
+    gpuSensiblePointsKernel<<<dim3(8, 8, 1), dim3(8, 8, 1)>>>(Ir, Ii, Xinc, Yinc, MaxIt, FieldCoord, FieldWeight);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
@@ -448,6 +459,7 @@ void gpuSensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {
 
     return;
 }
+
 void gpuFieldInit() {
     /*
     ! Initialize field values in the grid. Values are computed on the basis
@@ -518,6 +530,7 @@ void gpuFieldInit() {
 
     free(DiffValues);
 }
+
 void gpuCooling(int steps) {
     /*
     !  Compute evolution of the effects of the field
@@ -569,6 +582,7 @@ void gpuCooling(int steps) {
 
     return;
 }
+
 int gpuLinEquSolve(double *a, int n, double *b) {
     /* Gauss-Jordan elimination algorithm */
     int *indcol, *indrow, *ipiv;
@@ -771,7 +785,8 @@ double gpuNearestValue(double xc, double yc, int ld, double *Values) {
 }
 
 __global__ void gpuNearestValueKernel(double xc, double yc, double *Values, double *dist, int *mask, double *partialResult, int n) {
-    int i;
+    
+    int i, j;
     double a, b, v;
     __shared__ int np;
     __shared__ double md;
@@ -785,37 +800,100 @@ __global__ void gpuNearestValueKernel(double xc, double yc, double *Values, doub
     }
     __syncthreads();
 
-    // Compute lowest distance
+    // Compute Minimum
 
-    if (threadIdx.x == 0) {
-        md = dist[0];
+    int last;
+    int reduceLayer = (n + 1) / 2;
 
-        for (i = 1; i < n; i++)
-            if (dist[i] < md)
-                md = dist[i];
+    for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+
+        if ((2 * i + 1) < n) {
+
+            a = dist[2 * i];
+            b = dist[2 * i + 1];
+
+            if (a < b) {
+                //dist[2 * i] = a;
+                mask[2 * i] = 1;
+                partialResult[2 * i] = Values[index2D(2 * i, 2, n)];
+            }
+            else if (b < a) {
+                dist[2 * i] = b;
+                mask[2 * i] = 1;
+                partialResult[2 * i] = Values[index2D(2 * i + 1, 2, n)];
+            }
+            else {
+                //dist[2 * i] = a;
+                mask[2 * i] = 2;
+                partialResult[2 * i] = Values[index2D(2 * i, 2, n)] + Values[index2D(2 * i + 1, 2, n)];
+            }
+        }
+        else {
+            mask[2 * i] = 1;
+            partialResult[2 * i] = Values[index2D(2 * i, 2, n)];
+        }
     }
+
     __syncthreads();
 
-    // Compute nearest value
-
-    for (i = threadIdx.x; i < n; i += blockDim.x) {
-        mask[i] = (dist[i] == md);
-        partialResult[i] = (dist[i] == md) * Values[index2D(i, 2, n)];
+    for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+        dist[i] = dist[2 * i];
+        mask[i] = mask[2 * i];
+        partialResult[i] = partialResult[2 * i];
     }
+
+    last = reduceLayer % 2;
+    reduceLayer = (reduceLayer + 1) / 2;
+
     __syncthreads();
 
-    // Reduce
+    // Reducing Part
 
-    if (threadIdx.x == 0) {
-        np = 0;
-        v = 0.0;
+    while (reduceLayer > 1) {
+        for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+            if (i < reduceLayer - last) {
 
-        for (i = 0; i < n; i++) {
-            np = np + mask[i];
-            v = v + partialResult[i];
+                a = dist[2 * i];
+                b = dist[2 * i + 1];
+
+                if (b < a) {
+                    dist[2 * i] = b;
+                    mask[2 * i] = mask[2 * i + 1];
+                    partialResult[2 * i] = partialResult[2 * i + 1];
+                }
+                else if (a == b) {
+                    //dist[2 * i] = a;
+                    mask[2 * i] += mask[2 * i + 1];
+                    partialResult[2 * i] += partialResult[2 * i + 1];
+                }
+
+            }
         }
 
-        globalV = v / (double)np;
+        __syncthreads();
+
+        for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+            dist[i] = dist[2 * i];
+            mask[i] = mask[2 * i];
+            partialResult[i] = partialResult[2 * i];
+        }
+
+        last = reduceLayer % 2;
+        reduceLayer = (reduceLayer + 1) / 2;
+
+        __syncthreads();
+    }
+
+    // Compute final result
+
+    if (threadIdx.x == 0) {
+
+        a = dist[0];
+        b = dist[1];
+
+        if (a == b) globalV = (partialResult[0] + partialResult[1]) / (double)(mask[0] + mask[1]);
+        else if (a < b) globalV = partialResult[0] / (double)mask[0];
+        else if (b < a) globalV = partialResult[1] / (double)mask[1];
     }
 }
 
@@ -844,13 +922,13 @@ void MinMaxIntVal(int *Values, int len) {
     cudaError_t err;
 
     /* Allocate Temporary Results */
-    err = cudaMalloc(&tmpMax, sizeof(int) * (len + 1));
+    err = cudaMalloc(&tmpMax, sizeof(int) * (len + 1) / 2);
     if (err != cudaSuccess) {
         fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
         return;
     }
 
-    err = cudaMalloc(&tmpMin, sizeof(int) * (len + 1));
+    err = cudaMalloc(&tmpMin, sizeof(int) * (len + 1) / 2);
     if (err != cudaSuccess) {
         fprintf(stderr, "(cudaError) >>> %s\n", cudaGetErrorString(err));
         return;
@@ -870,7 +948,95 @@ void MinMaxIntVal(int *Values, int len) {
 }
 
 __global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMax) {
+
     int i;
+    double a, b;
+
+    // Compute
+
+    int last;
+    int reduceLayer = (len + 1) / 2;
+
+    for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+
+        a = Values[2 * i];
+
+        if ((2 * i + 1) < len) {
+
+            b = Values[2 * i + 1];
+
+            if (a <= b) {
+                tmpMin[i] = a;
+                tmpMax[i] = b;
+            }
+            else {
+                tmpMin[i] = b;
+                tmpMax[i] = a;
+            }
+        }
+        else {
+            tmpMin[i] = a;
+            tmpMax[i] = a;
+        }
+    }
+
+    __syncthreads();
+
+    last = reduceLayer % 2;
+    reduceLayer = (reduceLayer + 1) / 2;
+
+    __syncthreads();
+
+    // Reducing Part
+
+    while (reduceLayer > 1) {
+        for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+            if (i < reduceLayer - last) {
+
+                a = tmpMin[2 * i];
+                b = tmpMin[2 * i + 1];
+
+                if (b < a) tmpMin[2 * i] = b;
+
+                a = tmpMax[2 * i];
+                b = tmpMax[2 * i + 1];
+
+                if (b > a) tmpMax[2 * i] = b;
+            }
+        }
+
+        __syncthreads();
+
+        for (i = threadIdx.x; i < reduceLayer; i += blockDim.x) {
+            tmpMin[i] = tmpMin[2 * i];
+            tmpMax[i] = tmpMax[2 * i];
+        }
+
+        last = reduceLayer % 2;
+        reduceLayer = (reduceLayer + 1) / 2;
+
+        __syncthreads();
+    }
+
+    // Compute final result
+
+    if (threadIdx.x == 0) {
+
+        a = tmpMin[0];
+        b = tmpMin[1];
+
+        iMin = (a <= b) ? a : b;
+
+        a = tmpMax[0];
+        b = tmpMax[1];
+
+        iMax = (a >= b) ? a : b;
+
+        printf("-----> iMin = %d, iMax = %d on GPU\n", iMin, iMax);
+    }
+
+
+    /*int i;
     double a, b;
     int layerLength = (len + 1) / 2;
     int last;
@@ -920,9 +1086,12 @@ __global__ void MinMaxIntValKernel(int *Values, int len, int *tmpMin, int *tmpMa
     }
 
     if (threadIdx.x == 0) {
-        rMin = tmpMin[0];
-        rMax = tmpMax[0];
-    }
+        iMin = tmpMin[0];
+        iMax = tmpMax[0];
+
+
+        printf("-----> iMin = %d, iMax = %d on GPU\n", iMin, iMax);
+    }*/
 }
 
 __global__ void gpuFieldPointsKernel(double *FieldCoord, int *FieldWeight, double *FieldValues, double Diff, int TSlopeLength, double *TheorSlope) {
@@ -941,12 +1110,13 @@ __global__ void gpuFieldPointsKernel(double *FieldCoord, int *FieldWeight, doubl
 
             // Compute effects of field in every point
             sv = deviceNearestValue(xc, yc, TSlopeLength, TheorSlope);
-            FieldValues[index3D(ix, iy, 0, Xdots, Ydots)] = 293.16 + 80 * (Diff + sv) * (FieldWeight[index2D(ix, iy, Xdots)] - rMin) / (rMax - rMin);
+            FieldValues[index3D(ix, iy, 0, Xdots, Ydots)] = 293.16 + 80 * (Diff + sv) * (FieldWeight[index2D(ix, iy, Xdots)] - iMin) / (iMax - iMin);
         }
     }
 }
 
 __device__ double deviceNearestValue(double xc, double yc, int ld, double *Values) {
+
     // look for the best values near xc, yc coordinates
     double v;
 
@@ -957,25 +1127,24 @@ __device__ double deviceNearestValue(double xc, double yc, int ld, double *Value
     md = ((xc - Values[index2D(0, 0, ld)]) * (xc - Values[index2D(0, 0, ld)])) +
          ((yc - Values[index2D(0, 1, ld)]) * (yc - Values[index2D(0, 1, ld)]));
 
+    np = 1;
+    v = Values[index2D(0, 2, ld)];
+
     // Compute lowest distance
-    for (i = 0; i < ld; i++) {
+    for (i = 1; i < ld; i++) {
+
         d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
             ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md > d)
+
+        if (d == md) {
+            np++;
+            v += Values[index2D(i, 2, ld)];
+        }
+        else if (d < md)
+        {
             md = d;
-    }
-
-    np = 0;
-    v = 0.0;
-
-    // Compute nearest value
-    for (i = 0; i < ld; i++) {
-        d = ((xc - Values[index2D(i, 0, ld)]) * (xc - Values[index2D(i, 0, ld)])) +
-            ((yc - Values[index2D(i, 1, ld)]) * (yc - Values[index2D(i, 1, ld)]));
-        if (md == d) {
-            // add contributed value
-            np = np + 1;
-            v = v + Values[index2D(i, 2, ld)];
+            np = 1;
+            v = Values[index2D(i, 2, ld)];
         }
     }
 
@@ -1043,6 +1212,7 @@ __global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, do
 }
 
 void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step) {
+
     double mnv, mv, mxv, sd;
 
     double *tmpMin;
@@ -1059,7 +1229,16 @@ void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step) {
     tmpMean = &tmpMax[reduceLayer];
     tmpStd = &tmpMean[reduceLayer];
 
-    gpuStatisticsKernel<<<256, 128>>>(tmpMin, tmpMax, tmpMean, tmpStd, rdata, s1 * s2, reduceLayer);
+    bulkReduce<<<256, 128>>>(tmpMin, tmpMax, tmpMean, rdata, s1 * s2);
+    cudaDeviceSynchronize();
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "(CUDA Error) >> %s\n", cudaGetErrorString(err));
+        return;
+    }
+
+    gpuStatisticsKernel<<<1, 1024>>>(tmpMin, tmpMax, tmpMean, tmpStd, rdata, s1 * s2, 256 * 128);
     cudaDeviceSynchronize();
 
     err = cudaGetLastError();
@@ -1078,30 +1257,94 @@ void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step) {
     return;
 }
 
-__global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer) {
+__global__ void bulkReduce(double* tmpMin, double* tmpMax, double* tmpMean, double* Values, int len) {
+
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
     int i;
-    double a, b;
+    double a, min, max, mean;
+
+    // Strong reduce
+
+    int jobShare = len / stride;
+    int remainderJob = len % stride;
+
+    int offset = id * jobShare;
+
+    jobShare += (id < remainderJob);
+    offset += (id < remainderJob) ? id : remainderJob;
+
+    if (jobShare > 1) {
+
+        min = Values[offset];
+        max = Values[offset];
+        mean = Values[offset];
+
+        for (i = 1; i < jobShare; i++) {
+
+            if ((offset + i) >= len) break;
+
+            a = Values[offset + i];
+
+            if (a < min) min = a;
+            if (a > max) max = a;
+            mean += a;
+
+        }
+
+        tmpMin[id] = min;
+        tmpMax[id] = max;
+        tmpMean[id] = mean;
+    }
+}
+
+__global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer) {
+
+    int id = threadIdx.x;
+    int stride = blockDim.x;
+
+    int i;
+    double a, b, min, max, mean;
     int layerLength = reduceLayer;
 
     int last;
 
-    for (i = id; i < layerLength; i += stride) {
-        if ((2 * i + 1) < len) {
-            a = Values[2 * i];
-            b = Values[2 * i + 1];
+    // Strong reduce
 
-            tmpMin[i] = (a < b) ? a : b;
-            tmpMax[i] = (a > b) ? a : b;
-            tmpMean[i] = a + b;
-        } else {
-            tmpMin[i] = Values[2 * i];
-            tmpMax[i] = Values[2 * i];
-            tmpMean[i] = Values[2 * i];
+    int jobShare = reduceLayer / blockDim.x;
+    int remainderJob = reduceLayer % blockDim.x;
+
+    int offset = id * jobShare;
+
+    jobShare += (id < remainderJob);
+    offset += (id < remainderJob) ? id : remainderJob;
+
+    if (jobShare > 1) {
+
+        min = tmpMin[offset];
+        max = tmpMax[offset];
+        mean = tmpMean[offset];
+
+        for (i = 1; i < jobShare; i++) {
+
+            if ((offset + i) >= reduceLayer) break;
+
+            if (tmpMin[offset + i] < min) min = tmpMin[offset + i];
+            if (tmpMax[offset + i] > max) max = tmpMax[offset + i];
+            mean += tmpMean[offset + i];
         }
+
+        __syncthreads();
+
+        tmpMin[id] = min;
+        tmpMax[id] = max;
+        tmpMean[id] = mean;
+
+        layerLength = blockDim.x;
     }
+
+    // Further Reduce
 
     last = layerLength % 2;
     layerLength = (layerLength + 1) / 2;
@@ -1170,7 +1413,8 @@ __global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpM
             b = (b - mv) * (b - mv);
 
             tmpStd[i] = a + b;
-        } else {
+        }
+        else {
             a = Values[2 * i];
             a = (a - mv) * (a - mv);
 

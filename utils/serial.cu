@@ -179,7 +179,7 @@ void FieldDistribution() {
 
     GridDef(x0, x1, y0, y1, N, TheorSlope);
     EqsDef(x0, x1, y0, y1, N, LA, CoeffMatrix, B, TheorSlope);
-    GridDef(x0, x1, y0, y1, N, TheorSlope);
+    //GridDef(x0, x1, y0, y1, N, TheorSlope);
 
     rc = LinEquSolve(CoeffMatrix, LA, B);
     if (rc != 0)
@@ -236,6 +236,7 @@ void SensiblePoints(double Ir, double Ii, double Sr, double Si, int MaxIt) {
 
     return;
 }
+
 void FieldInit() {
     /*
     ! Initialize field values in the grid. Values are computed on the basis
@@ -311,6 +312,7 @@ void FieldInit() {
 
     return;
 }
+
 void Cooling(int steps) {
     /*
     !  Compute evolution of the effects of the field
@@ -345,6 +347,7 @@ void Cooling(int steps) {
 
     return;
 }
+
 void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts) {
     double x, y, dx, dy;
     int i, j, np, Mm1, Nm1;
@@ -370,6 +373,7 @@ void GridDef(double x0, double x1, double y0, double y1, int N, double *Pts) {
     }
     return;
 }
+
 void EqsDef(double x0, double x1, double y0, double y1, int N, int LA, double *A, double *Rhs, double *Pts) {
     // Pts(LA,3) - inner grid point Coordinates
     // Rhs(LA)   - Linear equation Right Hand Side
@@ -565,7 +569,9 @@ int LinEquSolve(double *a, int n, double *b) {
 
     return 0;
 }
+
 double NearestValue(double xc, double yc, int ld, double *Values) {
+
     // look for the best values near xc, yc coordinates
     double v;
 
@@ -602,13 +608,16 @@ double NearestValue(double xc, double yc, int ld, double *Values) {
 
     return v;
 }
+
 void FieldPoints(double Diff) {
     int ix, iy;
     double xc, yc, sv;
-    double rmin, rmax;
+    int rmin, rmax;
 
     rmax = MaxIntVal(Xdots * Ydots, FieldWeight);
     rmin = MinIntVal(Xdots * Ydots, FieldWeight);
+
+    printf("-----> rmin = %d, rmax = %d on CPU\n", rmin, rmax);
 
     for (iy = 0; iy < Ydots; iy++) {
         for (ix = 0; ix < Xdots; ix++) {
@@ -631,6 +640,7 @@ void FieldPoints(double Diff) {
 
     return;
 }
+
 void Update(int xdots, int ydots, double *u1, double *u2) {
     /* Compute next step using matrices g1, g2 of dimension (nr,nc) */
 

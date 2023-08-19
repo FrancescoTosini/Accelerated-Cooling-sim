@@ -13,8 +13,8 @@
 
 int rowlen(char *riga);
 int readrow(char *rg, int nc, FILE *daleg);
-double MinIntVal(int s, int *a);
-double MaxIntVal(int s, int *a);
+int MinIntVal(int s, int *a);
+int MaxIntVal(int s, int *a);
 double MinDoubleVal(int s, double *a);
 double MaxDoubleVal(int s, double *a);
 void SetIntValue(int *a, int l, int v);

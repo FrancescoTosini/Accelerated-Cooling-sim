@@ -60,6 +60,7 @@ __device__ double deviceNearestValue(double xc, double yc, int ld, double *Value
 
 void gpuCooling(int steps);
 void gpuStatistics(int s1, int s2, double *rdata, double *tmp, int step);
+__global__ void bulkReduce(double* tmpMin, double* tmpMax, double* tmpMean, double* Values, int len);
 __global__ void gpuStatisticsKernel(double *tmpMin, double *tmpMax, double *tmpMean, double *tmpStd, double *Values, int len, int reduceLayer);
 void gpuUpdate(int xdots, int ydots, double *u1, double *u2);
 __global__ void gpuUpdateKernel(int xdots, int ydots, double *u1, double *u2, double CX, double CY, double dgx, double dgy);

@@ -42,7 +42,7 @@ int readrow(char *rg, int nc, FILE *daleg) {
     return (lrg);
 }
 
-double MinIntVal(int s, int *a) // OPP: can be accelerated?
+int MinIntVal(int s, int *a) // OPP: can be ACCELERATEDerated?
 {
     int v;
     int e;
@@ -57,10 +57,12 @@ double MinIntVal(int s, int *a) // OPP: can be accelerated?
     return v;
 }
 
-double MaxIntVal(int s, int *a) // OPP: can be accelerated?
+int MaxIntVal(int s, int *a) // OPP: can be Accelerated?
 {
     int v;
     int e;
+
+    int t = 20;
 
     v = a[0];
 
@@ -72,7 +74,7 @@ double MaxIntVal(int s, int *a) // OPP: can be accelerated?
     return v;
 }
 
-double MinDoubleVal(int s, double *a) // OPP: can be accelerated?
+double MinDoubleVal(int s, double *a) // OPP: can be Accelerated?
 {
     double v;
     int e;
@@ -87,7 +89,7 @@ double MinDoubleVal(int s, double *a) // OPP: can be accelerated?
     return v;
 }
 
-double MaxDoubleVal(int s, double *a) // OPP: can be accelerated?
+double MaxDoubleVal(int s, double *a) // OPP: can be Accelerated?
 {
     double v;
     int e;
