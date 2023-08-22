@@ -92,26 +92,22 @@ int test() {
 
     printf(">> Checking correctness against CPU... do FieldDistribution match?\n");
 
-    tmpTheorSlope = (double*)malloc(sizeof(double) * TSlopeLength);
-    cudaMemcpy(tmpTheorSlope, &gpuTheorSlope[index2D(0, 2, TSlopeLength)], sizeof(double) * TSlopeLength, cudaMemcpyDeviceToHost);
+    tmpTheorSlope = (double*)malloc(sizeof(double) * TSlopeLength * 3);
+    cudaMemcpy(tmpTheorSlope, gpuTheorSlope, sizeof(double) * TSlopeLength * 3, cudaMemcpyDeviceToHost);
 
-    correct = TSlopeLength;
+    correct = TSlopeLength * 3;
 
-    for (i = 0; i < TSlopeLength; i++) {
-        if (cpuTheorSlope[index2D(i, 2, TSlopeLength)] != tmpTheorSlope[i]) correct--;
+    for (i = 0; i < TSlopeLength * 3; i++) {
+        if (fabs(cpuTheorSlope[i] - tmpTheorSlope[i]) > 0.001) correct--;
     }
 
     free(tmpTheorSlope);
 
-    printf("\t%.2f %% of values do actually coincide...\n\n", (float)correct * 100 / TSlopeLength);
-
-    setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
-    cudaMemcpy(gpuTheorSlope, cpuTheorSlope, sizeof(double) * TSlopeLength * 3, cudaMemcpyHostToDevice);
-
+    printf("\t%.2f %% of values do actually coincide...\n\n", (float)correct * 100 / (TSlopeLength * 3));
 
     printf(">> Checking correctness against CPU... do SensiblePoints match?\n");
 
-    //setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
+    setGpuPointers(gpuFieldWeight, gpuFieldCoord, gpuTheorSlope, gpuFieldValues);
     gpuSensiblePoints(Sreal, Simag, Rreal, Rimag, MaxIters);
     getGpuPointers(&gpuFieldWeight, &gpuFieldCoord, &gpuTheorSlope, &gpuFieldValues);
 

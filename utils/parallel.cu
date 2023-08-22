@@ -174,8 +174,8 @@ __global__ void gpuGridDefKernel(double x0, double y0, double dx, double dy, dou
 
         x = x0 + dx * (double)(i + 1);
         y = y0 + dy * (double)(j + 1);
-        Pts[index2D(i, 0, TSlopeLength)] = x;
-        Pts[index2D(i, 1, TSlopeLength)] = y;
+        Pts[index2D(np, 0, TSlopeLength)] = x;
+        Pts[index2D(np, 1, TSlopeLength)] = y;
     }
 }
 
